@@ -10,6 +10,111 @@ const binDir = dirname(__filename);
 const platform = process.platform;
 const arch = process.arch;
 
+/**
+ * Detect which package manager was used based on lockfiles in the project root.
+ * Returns: "bun" | "pnpm" | "yarn" | "npm" | null
+ */
+function detectPackageManagerFromLockfile(projectRoot) {
+	if (!projectRoot) return null;
+
+	// Check in order of specificity
+	if (
+		existsSync(join(projectRoot, "bun.lockb")) ||
+		existsSync(join(projectRoot, "bun.lock"))
+	) {
+		return "bun";
+	}
+	if (existsSync(join(projectRoot, "pnpm-lock.yaml"))) {
+		return "pnpm";
+	}
+	if (existsSync(join(projectRoot, "yarn.lock"))) {
+		return "yarn";
+	}
+	if (existsSync(join(projectRoot, "package-lock.json"))) {
+		return "npm";
+	}
+	return null;
+}
+
+/**
+ * Detect installation method from the wrapper's path.
+ * This is passed to the binary via environment variable since
+ * Bun-compiled binaries cannot determine their own filesystem path.
+ *
+ * Returns format: "package-manager-scope" (e.g., "npm-global", "pnpm-local")
+ */
+function detectInstallMethod() {
+	const wrapperPath = __filename;
+
+	// Check for bun global install (~/.bun/install/global/...)
+	if (
+		wrapperPath.includes("/.bun/") &&
+		wrapperPath.includes("/install/global/")
+	) {
+		return "bun-global";
+	}
+
+	// Check for pnpm global install (has /global/ in pnpm path)
+	if (
+		(wrapperPath.includes("/pnpm/") || wrapperPath.includes("/.pnpm/")) &&
+		wrapperPath.includes("/global/")
+	) {
+		return "pnpm-global";
+	}
+
+	// Check for yarn global install
+	if (
+		(wrapperPath.includes("/yarn/") || wrapperPath.includes("/.yarn/")) &&
+		(wrapperPath.includes("/global/") || wrapperPath.includes("/.config/yarn/"))
+	) {
+		return "yarn-global";
+	}
+
+	// Check for npm-style global install (version managers, system paths)
+	if (wrapperPath.includes("/node_modules/")) {
+		const isGlobal =
+			wrapperPath.includes("/lib/node_modules/") ||
+			wrapperPath.includes("/usr/local/") ||
+			wrapperPath.includes("/.nvm/") ||
+			wrapperPath.includes("/mise/") ||
+			wrapperPath.includes("/volta/") ||
+			wrapperPath.includes("/fnm/") ||
+			wrapperPath.includes("/asdf/");
+
+		if (isGlobal) {
+			return "npm-global";
+		}
+
+		// Local install - detect package manager from lockfile
+		// Find project root by going up from node_modules
+		const nodeModulesIndex = wrapperPath.indexOf("/node_modules/");
+		if (nodeModulesIndex !== -1) {
+			const projectRoot = wrapperPath.substring(0, nodeModulesIndex);
+			const pm = detectPackageManagerFromLockfile(projectRoot);
+			if (pm) {
+				return `${pm}-local`;
+			}
+		}
+
+		// Fallback to npm-local if no lockfile found
+		return "npm-local";
+	}
+
+	// Fallback - shouldn't normally reach here via wrapper
+	return "unknown";
+}
+
+const installMethod = detectInstallMethod();
+
+// For local installs, find the project root so the binary can run updates there
+let projectRoot = null;
+if (installMethod.endsWith("-local")) {
+	const nodeModulesIndex = __filename.indexOf("/node_modules/");
+	if (nodeModulesIndex !== -1) {
+		projectRoot = __filename.substring(0, nodeModulesIndex);
+	}
+}
+
 // Map Node.js platform/arch to our binary names
 const platformMap = {
 	darwin: "darwin",
@@ -43,9 +148,15 @@ if (!existsSync(binaryPath)) {
 }
 
 // Execute the binary with all arguments passed through
+// Pass install method and project root via env vars since Bun binaries can't detect their own path
 const child = spawn(binaryPath, process.argv.slice(2), {
 	stdio: "inherit",
 	windowsHide: true,
+	env: {
+		...process.env,
+		CORSA_INSTALL_METHOD: installMethod,
+		...(projectRoot ? { CORSA_PROJECT_ROOT: projectRoot } : {}),
+	},
 });
 
 child.on("error", (err) => {

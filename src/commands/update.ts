@@ -3,7 +3,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { createWriteStream, realpathSync, unlinkSync } from "node:fs";
+import { createWriteStream, unlinkSync } from "node:fs";
 import { chmod, rename } from "node:fs/promises";
 import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
@@ -19,10 +19,14 @@ export const GITHUB_REPO = "tomagranate/corsa";
 
 /** Installation method types */
 export type InstallMethod =
-	| "npm"
-	| "pnpm"
-	| "bun"
-	| "yarn"
+	| "npm-global"
+	| "npm-local"
+	| "pnpm-global"
+	| "pnpm-local"
+	| "bun-global"
+	| "bun-local"
+	| "yarn-global"
+	| "yarn-local"
 	| "brew"
 	| "direct"
 	| "development"
@@ -31,6 +35,8 @@ export type InstallMethod =
 /**
  * Detect installation method from a resolved binary path.
  * Exported for testing.
+ *
+ * Returns format: "package-manager-scope" (e.g., "npm-global", "pnpm-local")
  */
 export function detectInstallMethodFromPath(
 	realPath: string,
@@ -46,25 +52,42 @@ export function detectInstallMethodFromPath(
 		return "development";
 	}
 
-	// Check for bun global install (~/.bun/install/global/...)
+	// Check for bun install (~/.bun/...)
 	if (realPath.includes("/.bun/")) {
-		return "bun";
+		// Global installs are in ~/.bun/install/global/
+		const isGlobal = realPath.includes("/install/global/");
+		return isGlobal ? "bun-global" : "bun-local";
 	}
 
-	// Check for pnpm global install (~/.local/share/pnpm/... or ~/.pnpm/...)
+	// Check for pnpm install
 	if (realPath.includes("/pnpm/") || realPath.includes("/.pnpm/")) {
-		return "pnpm";
+		// Global installs have /global/ in the path
+		const isGlobal = realPath.includes("/global/");
+		return isGlobal ? "pnpm-global" : "pnpm-local";
 	}
 
-	// Check for yarn global install (~/.config/yarn/global/... or ~/.yarn/...)
+	// Check for yarn install
 	// Must check before npm because yarn paths may also contain node_modules
 	if (realPath.includes("/yarn/") || realPath.includes("/.yarn/")) {
-		return "yarn";
+		// Global installs are in ~/.config/yarn/global/ or have /global/ in path
+		const isGlobal =
+			realPath.includes("/global/") || realPath.includes("/.config/yarn/");
+		return isGlobal ? "yarn-global" : "yarn-local";
 	}
 
-	// Check for npm global install (contains node_modules but not yarn/pnpm/bun)
+	// Check for npm install (contains node_modules but not yarn/pnpm/bun)
 	if (realPath.includes("/node_modules/")) {
-		return "npm";
+		// Global installs are typically in system paths or version manager paths
+		// Local installs are in project directories
+		const isGlobal =
+			realPath.includes("/lib/node_modules/") ||
+			realPath.includes("/usr/local/") ||
+			realPath.includes("/.nvm/") ||
+			realPath.includes("/mise/") ||
+			realPath.includes("/volta/") ||
+			realPath.includes("/fnm/") ||
+			realPath.includes("/asdf/");
+		return isGlobal ? "npm-global" : "npm-local";
 	}
 
 	// Check for Homebrew install (contains Cellar or homebrew)
@@ -105,30 +128,59 @@ export function detectInstallMethodFromPath(
 }
 
 /**
- * Detect how corsa was installed by examining the current binary path.
+ * Detect how corsa was installed.
+ *
+ * Detection strategy:
+ * 1. Check CORSA_INSTALL_METHOD env var (set by wrapper script for npm/pnpm/bun/yarn)
+ * 2. Check HOMEBREW_PREFIX env var (indicates homebrew environment)
+ * 3. Fall back to "direct" (standalone binary install)
+ *
+ * Note: Bun-compiled binaries cannot determine their own filesystem path
+ * (process.argv[0] returns "bun" and all import.meta paths return virtual /$bunfs/ paths).
+ * The wrapper script detects the install method from its own path and passes it via env var.
  */
 export function detectInstallMethod(): InstallMethod {
-	try {
-		// Get the path to this binary
-		// In compiled Bun binaries, argv[0] is the binary path (C-style)
-		// This differs from Node.js where argv[0] is node and argv[1] is the script
-		const binaryPath = process.argv[0];
-		if (!binaryPath) {
-			return "unknown";
+	// Check if wrapper script passed the install method
+	const envMethod = process.env.CORSA_INSTALL_METHOD;
+	if (envMethod) {
+		// Validate it's a known method
+		const validMethods: InstallMethod[] = [
+			"npm-global",
+			"npm-local",
+			"pnpm-global",
+			"pnpm-local",
+			"bun-global",
+			"bun-local",
+			"yarn-global",
+			"yarn-local",
+			"brew",
+			"direct",
+			"development",
+			"unknown",
+		];
+		if (validMethods.includes(envMethod as InstallMethod)) {
+			return envMethod as InstallMethod;
 		}
-
-		// Resolve symlinks to get the real path
-		let realPath: string;
-		try {
-			realPath = realpathSync(binaryPath);
-		} catch {
-			realPath = binaryPath;
-		}
-
-		return detectInstallMethodFromPath(realPath);
-	} catch {
-		return "unknown";
 	}
+
+	// Check for development mode (running via bun dev, node, etc.)
+	// In dev mode, argv[0] is the runtime (bun, node) not corsa
+	const argv0 = process.argv[0];
+	if (argv0) {
+		const basename = argv0.split("/").pop() ?? "";
+		if (["bun", "node", "nodejs", "deno"].includes(basename)) {
+			return "development";
+		}
+	}
+
+	// Check for Homebrew install via environment variable
+	// When running directly (no wrapper), this indicates brew install
+	if (process.env.HOMEBREW_PREFIX) {
+		return "brew";
+	}
+
+	// Default to direct install (standalone binary)
+	return "direct";
 }
 
 /**
@@ -409,59 +461,328 @@ async function selfUpdate(): Promise<void> {
 	console.log(`\nSuccessfully updated to v${latestVersion}!`);
 }
 
+/** Methods that can be auto-updated */
+type AutoUpdateMethod =
+	| "npm-global"
+	| "npm-local"
+	| "pnpm-global"
+	| "pnpm-local"
+	| "bun-global"
+	| "bun-local"
+	| "yarn-global"
+	| "yarn-local"
+	| "brew";
+
+// Colors (respects NO_COLOR env var)
+const useColor = !process.env.NO_COLOR && process.stdout.isTTY;
+const colors = {
+	reset: useColor ? "\x1b[0m" : "",
+	bold: useColor ? "\x1b[1m" : "",
+	dim: useColor ? "\x1b[2m" : "",
+	cyan: useColor ? "\x1b[36m" : "",
+	green: useColor ? "\x1b[32m" : "",
+	yellow: useColor ? "\x1b[33m" : "",
+	red: useColor ? "\x1b[31m" : "",
+	blue: useColor ? "\x1b[34m" : "",
+	magenta: useColor ? "\x1b[35m" : "",
+};
+
+// Spinner frames
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /**
- * Run the update command.
+ * Create a spinner that shows progress
  */
-export async function runUpdate(): Promise<void> {
+function createSpinner(message: string) {
+	let frameIndex = 0;
+	let interval: ReturnType<typeof setInterval> | null = null;
+
+	const start = () => {
+		if (!process.stdout.isTTY) {
+			console.log(`  ${message}...`);
+			return;
+		}
+		interval = setInterval(() => {
+			process.stdout.write(
+				`\r  ${colors.cyan}${spinnerFrames[frameIndex]}${colors.reset} ${message}`,
+			);
+			frameIndex = (frameIndex + 1) % spinnerFrames.length;
+		}, 80);
+	};
+
+	const stop = (success: boolean, finalMessage?: string) => {
+		if (interval) clearInterval(interval);
+		if (process.stdout.isTTY) {
+			const icon = success
+				? `${colors.green}✓${colors.reset}`
+				: `${colors.red}✗${colors.reset}`;
+			process.stdout.write(`\r  ${icon} ${finalMessage ?? message}\n`);
+		} else if (finalMessage) {
+			console.log(`  ${success ? "✓" : "✗"} ${finalMessage}`);
+		}
+	};
+
+	return { start, stop };
+}
+
+/**
+ * Print a fancy header
+ */
+function printHeader() {
+	console.log();
+	console.log(
+		`${colors.cyan}${colors.bold}  ╭─────────────────────────────────╮${colors.reset}`,
+	);
+	console.log(
+		`${colors.cyan}${colors.bold}  │${colors.reset}        ${colors.bold}corsa update${colors.reset}             ${colors.cyan}${colors.bold}│${colors.reset}`,
+	);
+	console.log(
+		`${colors.cyan}${colors.bold}  ╰─────────────────────────────────╯${colors.reset}`,
+	);
+	console.log();
+}
+
+/**
+ * Print success box
+ */
+function printSuccess(message: string) {
+	console.log();
+	console.log(
+		`${colors.green}${colors.bold}  ╭─────────────────────────────────╮${colors.reset}`,
+	);
+	console.log(
+		`${colors.green}${colors.bold}  │${colors.reset}   ${colors.green}✓${colors.reset} ${message.padEnd(27)} ${colors.green}${colors.bold}│${colors.reset}`,
+	);
+	console.log(
+		`${colors.green}${colors.bold}  ╰─────────────────────────────────╯${colors.reset}`,
+	);
+	console.log();
+}
+
+/**
+ * Print info line
+ */
+function printInfo(label: string, value: string) {
+	console.log(
+		`  ${colors.dim}${label}:${colors.reset} ${colors.bold}${value}${colors.reset}`,
+	);
+}
+
+/** Result of running update in TUI mode */
+export type UpdateResult =
+	| { success: true; version: string }
+	| { success: false; error: string };
+
+/**
+ * Run the update in TUI mode (no console output, returns result).
+ */
+export async function runUpdateInTui(): Promise<UpdateResult> {
 	const method = detectInstallMethod();
+	const projectRoot = process.env.CORSA_PROJECT_ROOT;
 
-	console.log(`Detected installation method: ${method}`);
-	console.log("");
-
-	const commands: Record<
-		Exclude<InstallMethod, "direct" | "development" | "unknown">,
-		string[]
-	> = {
-		npm: ["npm", "update", "-g", NPM_PACKAGE],
-		pnpm: ["pnpm", "update", "-g", NPM_PACKAGE],
-		bun: ["bun", "update", "-g", NPM_PACKAGE],
-		yarn: ["yarn", "global", "upgrade", NPM_PACKAGE],
+	// Commands for updates
+	const updateCommands: Record<AutoUpdateMethod, string[]> = {
+		"npm-global": ["npm", "update", "-g", NPM_PACKAGE],
+		"npm-local": ["npm", "update", NPM_PACKAGE],
+		"pnpm-global": ["pnpm", "update", "-g", NPM_PACKAGE],
+		"pnpm-local": ["pnpm", "update", NPM_PACKAGE],
+		"bun-global": ["bun", "update", "-g", NPM_PACKAGE],
+		"bun-local": ["bun", "update", NPM_PACKAGE],
+		"yarn-global": ["yarn", "global", "upgrade", NPM_PACKAGE],
+		"yarn-local": ["yarn", "upgrade", NPM_PACKAGE],
 		brew: ["brew", "upgrade", "corsa"],
 	};
 
 	try {
 		if (method === "development") {
-			console.log("Running in development mode.");
-			console.log("");
-			console.log("To update, use git:");
-			console.log("  git pull");
+			return { success: false, error: "Running from source (use git pull)" };
+		}
+
+		if (method === "direct") {
+			// For direct installs, we need to do self-update
+			// This is complex and not suitable for TUI mode
+			return {
+				success: false,
+				error: "Direct binary update not supported in TUI. Run: corsa update",
+			};
+		}
+
+		if (method === "unknown") {
+			return { success: false, error: "Unknown installation method" };
+		}
+
+		if (!(method in updateCommands)) {
+			return { success: false, error: `No update command for ${method}` };
+		}
+
+		// Check for updates first
+		const currentVersion = getVersion();
+		let latestVersion: string;
+		try {
+			latestVersion = await getLatestVersion();
+		} catch {
+			return { success: false, error: "Could not check for updates" };
+		}
+
+		if (currentVersion === latestVersion) {
+			return { success: true, version: latestVersion };
+		}
+
+		// Run the update
+		const cmd = updateCommands[method as AutoUpdateMethod];
+		const isLocal = method.endsWith("-local");
+
+		const execOptions: { stdio: "pipe"; cwd?: string } = {
+			stdio: "pipe",
+		};
+
+		if (isLocal && projectRoot) {
+			execOptions.cwd = projectRoot;
+		}
+
+		try {
+			execSync(cmd.join(" "), execOptions);
+		} catch {
+			return {
+				success: false,
+				error: `Update command failed: ${cmd.join(" ")}`,
+			};
+		}
+
+		return { success: true, version: latestVersion };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { success: false, error: message };
+	}
+}
+
+/**
+ * Run the update command.
+ */
+export async function runUpdate(): Promise<void> {
+	const method = detectInstallMethod();
+	const projectRoot = process.env.CORSA_PROJECT_ROOT;
+
+	printHeader();
+	printInfo("Install method", method);
+
+	// Commands for updates
+	const updateCommands: Record<AutoUpdateMethod, string[]> = {
+		"npm-global": ["npm", "update", "-g", NPM_PACKAGE],
+		"npm-local": ["npm", "update", NPM_PACKAGE],
+		"pnpm-global": ["pnpm", "update", "-g", NPM_PACKAGE],
+		"pnpm-local": ["pnpm", "update", NPM_PACKAGE],
+		"bun-global": ["bun", "update", "-g", NPM_PACKAGE],
+		"bun-local": ["bun", "update", NPM_PACKAGE],
+		"yarn-global": ["yarn", "global", "upgrade", NPM_PACKAGE],
+		"yarn-local": ["yarn", "upgrade", NPM_PACKAGE],
+		brew: ["brew", "upgrade", "corsa"],
+	};
+
+	try {
+		if (method === "development") {
+			printInfo("Mode", "Development");
+			console.log();
+			console.log(`  ${colors.yellow}!${colors.reset} Running from source`);
+			console.log();
+			console.log(`  ${colors.dim}To update, use:${colors.reset}`);
+			console.log(`  ${colors.cyan}$${colors.reset} git pull`);
+			console.log();
 			process.exit(0);
 		} else if (method === "direct") {
+			console.log();
 			await selfUpdate();
-		} else if (method === "unknown") {
-			console.log("Could not detect how corsa was installed.");
-			console.log("");
-			console.log("Try one of these commands manually:");
-			console.log("  npm update -g @tomagranate/corsa");
-			console.log("  pnpm update -g @tomagranate/corsa");
-			console.log("  bun update -g @tomagranate/corsa");
-			console.log("  yarn global upgrade @tomagranate/corsa");
-			console.log("  brew upgrade corsa");
-			console.log("");
-			console.log("Or reinstall via the install script:");
-			console.log(
-				"  curl -fsSL https://raw.githubusercontent.com/tomagranate/corsa/main/install.sh | bash",
+		} else if (method in updateCommands) {
+			const cmd = updateCommands[method as AutoUpdateMethod];
+			const isLocal = method.endsWith("-local");
+
+			if (isLocal && projectRoot) {
+				printInfo("Project", projectRoot);
+			}
+
+			console.log();
+
+			// Check for updates first
+			const checkSpinner = createSpinner("Checking for updates");
+			checkSpinner.start();
+
+			const currentVersion = getVersion();
+			let latestVersion: string;
+			try {
+				latestVersion = await getLatestVersion();
+			} catch {
+				checkSpinner.stop(false, "Failed to check for updates");
+				throw new Error("Could not reach GitHub to check for updates");
+			}
+			checkSpinner.stop(
+				true,
+				`Current: v${currentVersion} → Latest: v${latestVersion}`,
 			);
+
+			if (currentVersion === latestVersion) {
+				printSuccess("Already up to date!");
+				process.exit(0);
+			}
+
+			// Run the update
+			console.log();
+			console.log(
+				`  ${colors.dim}Running:${colors.reset} ${colors.cyan}${cmd.join(" ")}${colors.reset}`,
+			);
+			console.log();
+
+			const execOptions: { stdio: "inherit"; cwd?: string } = {
+				stdio: "inherit",
+			};
+
+			// For local installs, run in the project directory
+			if (isLocal && projectRoot) {
+				execOptions.cwd = projectRoot;
+			}
+
+			execSync(cmd.join(" "), execOptions);
+
+			printSuccess(`Updated to v${latestVersion}!`);
+		} else if (method === "unknown") {
+			console.log();
+			console.log(
+				`  ${colors.yellow}!${colors.reset} Could not detect installation method`,
+			);
+			console.log();
+			console.log(`  ${colors.dim}Try one of these commands:${colors.reset}`);
+			console.log(
+				`  ${colors.cyan}$${colors.reset} npm update -g ${NPM_PACKAGE}`,
+			);
+			console.log(
+				`  ${colors.cyan}$${colors.reset} pnpm update -g ${NPM_PACKAGE}`,
+			);
+			console.log(
+				`  ${colors.cyan}$${colors.reset} bun update -g ${NPM_PACKAGE}`,
+			);
+			console.log(
+				`  ${colors.cyan}$${colors.reset} yarn global upgrade ${NPM_PACKAGE}`,
+			);
+			console.log(`  ${colors.cyan}$${colors.reset} brew upgrade corsa`);
+			console.log();
+			console.log(`  ${colors.dim}Or reinstall:${colors.reset}`);
+			console.log(
+				`  ${colors.cyan}$${colors.reset} curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash`,
+			);
+			console.log();
 			process.exit(1);
 		} else {
-			const cmd = commands[method];
-			console.log(`Running: ${cmd.join(" ")}`);
-			console.log("");
-			execSync(cmd.join(" "), { stdio: "inherit" });
+			console.log();
+			console.log(
+				`  ${colors.red}✗${colors.reset} Unknown installation method: ${method}`,
+			);
+			console.log();
+			process.exit(1);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`\nUpdate failed: ${message}`);
+		console.log();
+		console.log(`  ${colors.red}✗${colors.reset} Update failed: ${message}`);
+		console.log();
 		process.exit(1);
 	}
 }

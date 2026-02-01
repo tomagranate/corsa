@@ -12,6 +12,8 @@ interface HelpBarProps {
 	showVersion?: boolean;
 	/** Whether an update is available */
 	isUpdateAvailable?: boolean;
+	/** Called when the update indicator is clicked */
+	onUpdateClick?: () => void;
 }
 
 interface HintItem {
@@ -125,6 +127,7 @@ export function HelpBar({
 	width,
 	showVersion = false,
 	isUpdateAvailable = false,
+	onUpdateClick,
 }: HelpBarProps) {
 	const { colors } = theme;
 
@@ -160,7 +163,14 @@ export function HelpBar({
 				<box flexDirection="row">
 					<text fg={colors.textMuted}> {versionText}</text>
 					{isUpdateAvailable && (
-						<text fg={colors.accent}>{updateIndicator}</text>
+						<text
+							fg={colors.accent}
+							{...({
+								onMouseDown: onUpdateClick,
+							} as Record<string, unknown>)}
+						>
+							{updateIndicator}
+						</text>
 					)}
 					<text fg={colors.textMuted}> </text>
 				</box>

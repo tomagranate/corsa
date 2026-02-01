@@ -1,6 +1,7 @@
 import { type CliRenderer, TextAttributes } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { runUpdateInTui } from "./commands/update";
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette, commandPalette } from "./components/CommandPalette";
 import { HelpBar, type HelpBarMode } from "./components/HelpBar";
@@ -273,6 +274,7 @@ export function App({
 	const [updateState, setUpdateState] = useState<UpdateState>(
 		updateChecker.getState(),
 	);
+	const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false);
 	const { width: terminalWidth } = useTerminalDimensions();
 
 	// Get search state for a specific tab (returns default if not set)
@@ -410,6 +412,32 @@ export function App({
 			return newValue;
 		});
 	}, [onLineWrapChange]);
+
+	// Handle check for updates (shows loader in modal)
+	const handleCheckForUpdates = useCallback(async () => {
+		setIsCheckingForUpdates(true);
+		try {
+			await updateChecker.checkForUpdates(true); // Force check
+		} finally {
+			setIsCheckingForUpdates(false);
+		}
+	}, []);
+
+	// Handle update click (runs the update)
+	const handleUpdate = useCallback(async () => {
+		toast.info("Updating corsa...");
+		const result = await runUpdateInTui();
+		if (result.success) {
+			toast.info(`Updated corsa to v${result.version}. Restart to activate`);
+		} else {
+			toast.error(`Update failed - ${result.error}`);
+		}
+	}, []);
+
+	// Handle HelpBar update click (opens About modal)
+	const handleHelpBarUpdateClick = useCallback(() => {
+		setAboutModalOpen(true);
+	}, []);
 
 	// Toggle debug console (OpenTUI built-in console)
 	const toggleConsole = useCallback(() => {
@@ -1041,6 +1069,7 @@ export function App({
 				width={terminalWidth}
 				showVersion={useVertical}
 				isUpdateAvailable={updateState.isUpdateAvailable}
+				onUpdateClick={handleHelpBarUpdateClick}
 			/>
 			<ToastContainer theme={theme} topOffset={calculateToastOffset()} />
 			<CommandPalette
@@ -1064,6 +1093,9 @@ export function App({
 				theme={theme}
 				updateState={updateState}
 				configPath={configPath}
+				isCheckingForUpdates={isCheckingForUpdates}
+				onCheckForUpdates={handleCheckForUpdates}
+				onUpdate={handleUpdate}
 			/>
 		</box>
 	);
