@@ -6,6 +6,32 @@ describe("detectInstallMethodFromPath", () => {
 	const detect = (path: string): InstallMethod =>
 		detectInstallMethodFromPath(path, { checkBrew: false });
 
+	describe("development mode", () => {
+		test("detects bun runtime (Apple Silicon homebrew)", () => {
+			expect(detect("/opt/homebrew/bin/bun")).toBe("development");
+		});
+
+		test("detects bun runtime (Intel homebrew)", () => {
+			expect(detect("/usr/local/bin/bun")).toBe("development");
+		});
+
+		test("detects bun runtime (bun self-install)", () => {
+			expect(detect("/Users/tom/.bun/bin/bun")).toBe("development");
+		});
+
+		test("detects node runtime", () => {
+			expect(detect("/usr/local/bin/node")).toBe("development");
+		});
+
+		test("detects nodejs runtime", () => {
+			expect(detect("/usr/bin/nodejs")).toBe("development");
+		});
+
+		test("detects deno runtime", () => {
+			expect(detect("/usr/local/bin/deno")).toBe("development");
+		});
+	});
+
 	describe("bun global install", () => {
 		test("detects ~/.bun/install/global path", () => {
 			expect(

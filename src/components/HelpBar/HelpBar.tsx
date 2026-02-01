@@ -1,3 +1,4 @@
+import packageJson from "../../../package.json";
 import type { Theme } from "../../lib/theme";
 
 export type HelpBarMode = "normal" | "search" | "commandPalette" | "shortcuts";
@@ -7,6 +8,10 @@ interface HelpBarProps {
 	mode: HelpBarMode;
 	/** Terminal width for responsive display */
 	width: number;
+	/** Whether to show the version branding (hidden in horizontal tab bar mode) */
+	showVersion?: boolean;
+	/** Whether an update is available */
+	isUpdateAvailable?: boolean;
 }
 
 interface HintItem {
@@ -114,14 +119,32 @@ export function formatHints(hints: HintItem[], availableWidth: number): string {
 	return `${ultraCompact.slice(0, availableWidth - 1)}…`;
 }
 
-export function HelpBar({ theme, mode, width }: HelpBarProps) {
+export function HelpBar({
+	theme,
+	mode,
+	width,
+	showVersion = false,
+	isUpdateAvailable = false,
+}: HelpBarProps) {
 	const { colors } = theme;
 
-	// Account for padding (1 char each side = 2 total)
-	const availableWidth = width - 2;
+	const versionText = `corsa ${packageJson.version}`;
+	const updateIndicator = isUpdateAvailable ? " (update!)" : "";
+	const fullVersionText = versionText + updateIndicator;
+	const versionWidth = showVersion ? fullVersionText.length + 2 : 0; // +2 for padding
+
+	// Calculate available width for hints (accounting for version if shown)
+	const hintsAvailableWidth = width - versionWidth;
 
 	const hints = getHintsForMode(mode);
-	const displayText = formatHints(hints, availableWidth);
+	const displayText = formatHints(hints, hintsAvailableWidth);
+
+	// Calculate padding to center hints in the remaining space
+	const hintsPadding = Math.max(
+		0,
+		Math.floor((hintsAvailableWidth - displayText.length) / 2),
+	);
+	const centeredHints = " ".repeat(hintsPadding) + displayText;
 
 	return (
 		<box
@@ -130,10 +153,21 @@ export function HelpBar({ theme, mode, width }: HelpBarProps) {
 			flexGrow={0}
 			flexShrink={0}
 			backgroundColor={colors.surface1}
-			justifyContent="center"
+			flexDirection="row"
 			alignItems="center"
 		>
-			<text fg={colors.text}>{displayText}</text>
+			{showVersion && (
+				<box flexDirection="row">
+					<text fg={colors.textMuted}> {versionText}</text>
+					{isUpdateAvailable && (
+						<text fg={colors.accent}>{updateIndicator}</text>
+					)}
+					<text fg={colors.textMuted}> </text>
+				</box>
+			)}
+			<box flexGrow={1}>
+				<text fg={colors.text}>{centeredHints}</text>
+			</box>
 		</box>
 	);
 }

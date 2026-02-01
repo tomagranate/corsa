@@ -10,6 +10,10 @@ export interface Preferences {
 	theme?: string;
 	/** Whether to wrap long lines (default: true) */
 	lineWrap?: boolean;
+	/** Latest known version from update check */
+	latestKnownVersion?: string;
+	/** Unix timestamp (ms) of last update check */
+	lastUpdateCheck?: number;
 }
 
 /**
@@ -61,6 +65,14 @@ export function loadPreferences(): Preferences {
 
 		if (typeof obj.lineWrap === "boolean") {
 			prefs.lineWrap = obj.lineWrap;
+		}
+
+		if (typeof obj.latestKnownVersion === "string") {
+			prefs.latestKnownVersion = obj.latestKnownVersion;
+		}
+
+		if (typeof obj.lastUpdateCheck === "number") {
+			prefs.lastUpdateCheck = obj.lastUpdateCheck;
 		}
 
 		return prefs;

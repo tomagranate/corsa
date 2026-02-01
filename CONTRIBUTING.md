@@ -1,6 +1,6 @@
-# Contributing to Corsa
+# Contributing to corsa
 
-Thank you for your interest in contributing to Corsa! This guide will help you get set up for development.
+Thank you for your interest in contributing to corsa! This guide will help you get set up for development.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ bun install
 bun dev
 ```
 
-This runs Corsa using the `corsa.config.toml` in the project root, which includes test scripts for development.
+This runs corsa using the `corsa.config.toml` in the project root, which includes test scripts for development.
 
 ## Available Scripts
 
@@ -105,7 +105,7 @@ These are useful for testing edge cases in the UI.
 
 ## Architecture
 
-Corsa is built with:
+corsa is built with:
 
 - **[OpenTUI](https://github.com/anomalyco/opentui)** - Terminal UI framework for React
 - **React** - Component model
@@ -115,7 +115,7 @@ Corsa is built with:
 
 ### Key Concepts
 
-- **Tools**: The processes managed by Corsa, defined in the config file
+- **Tools**: The processes managed by corsa, defined in the config file
 - **Process Manager**: Handles spawning, stopping, and monitoring child processes
 - **Log Viewer**: Virtualized log display with ANSI support and search
 - **MCP API**: HTTP API + MCP server for external integrations
@@ -137,7 +137,7 @@ Releases are automated via GitHub Actions. Binaries are hosted on GitHub Release
 
 When reporting bugs, please include:
 
-- Corsa version (`corsa --help` shows version info)
+- corsa version (`corsa --help` shows version info)
 - Operating system and terminal
 - Steps to reproduce
 - Expected vs actual behavior

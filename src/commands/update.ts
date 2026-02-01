@@ -15,7 +15,7 @@ import { getVersion } from "../cli";
 const NPM_PACKAGE = "@tomagranate/corsa";
 
 /** GitHub repo for releases */
-const GITHUB_REPO = "tomagranate/corsa";
+export const GITHUB_REPO = "tomagranate/corsa";
 
 /** Installation method types */
 export type InstallMethod =
@@ -25,6 +25,7 @@ export type InstallMethod =
 	| "yarn"
 	| "brew"
 	| "direct"
+	| "development"
 	| "unknown";
 
 /**
@@ -37,6 +38,12 @@ export function detectInstallMethodFromPath(
 ): InstallMethod {
 	if (!realPath) {
 		return "unknown";
+	}
+
+	// Check if running via a runtime (bun dev, node, etc.) - development mode
+	const basename = realPath.split("/").pop() ?? "";
+	if (["bun", "node", "nodejs", "deno"].includes(basename)) {
+		return "development";
 	}
 
 	// Check for bun global install (~/.bun/install/global/...)
@@ -98,9 +105,9 @@ export function detectInstallMethodFromPath(
 }
 
 /**
- * Detect how toolui was installed by examining the current binary path.
+ * Detect how corsa was installed by examining the current binary path.
  */
-function detectInstallMethod(): InstallMethod {
+export function detectInstallMethod(): InstallMethod {
 	try {
 		// Get the path to this binary
 		// In compiled Bun binaries, argv[0] is the binary path (C-style)
@@ -142,7 +149,7 @@ function commandExists(cmd: string): boolean {
 /**
  * Get the latest version from GitHub releases.
  */
-async function getLatestVersion(): Promise<string> {
+export async function getLatestVersion(): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const url = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
 
@@ -412,7 +419,7 @@ export async function runUpdate(): Promise<void> {
 	console.log("");
 
 	const commands: Record<
-		Exclude<InstallMethod, "direct" | "unknown">,
+		Exclude<InstallMethod, "direct" | "development" | "unknown">,
 		string[]
 	> = {
 		npm: ["npm", "update", "-g", NPM_PACKAGE],
@@ -423,7 +430,13 @@ export async function runUpdate(): Promise<void> {
 	};
 
 	try {
-		if (method === "direct") {
+		if (method === "development") {
+			console.log("Running in development mode.");
+			console.log("");
+			console.log("To update, use git:");
+			console.log("  git pull");
+			process.exit(0);
+		} else if (method === "direct") {
 			await selfUpdate();
 		} else if (method === "unknown") {
 			console.log("Could not detect how corsa was installed.");

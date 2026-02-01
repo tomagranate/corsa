@@ -274,6 +274,7 @@ async function main() {
 						initialTools={initialTools}
 						renderer={renderer}
 						config={config}
+						configPath={configPath}
 						initialLineWrap={initialLineWrap}
 						onLineWrapChange={handleLineWrapChange}
 						onRegisterConfigUpdate={handleRegisterConfigUpdate}

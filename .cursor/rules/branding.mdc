@@ -1,0 +1,23 @@
+---
+description: Branding guidelines for corsa
+alwaysApply: true
+---
+
+# Branding
+
+- **corsa** should always be written in lowercase, even at the start of a sentence
+- Do not capitalize as "Corsa" or "CORSA"
+
+## Examples
+
+```
+# ❌ BAD
+Corsa is a TUI for managing processes.
+Welcome to CORSA!
+About Corsa
+
+# ✅ GOOD
+corsa is a TUI for managing processes.
+Welcome to corsa!
+About corsa
+```

@@ -1,12 +1,12 @@
-# Corsa
+# corsa
 
 A Terminal User Interface (TUI) for managing multiple local development processes. View real-time logs, monitor status, and control all your dev servers from a single dashboard.
 
 Built with [OpenTUI](https://github.com/anomalyco/opentui).
 
-## Why Corsa?
+## Why corsa?
 
-When working on a full-stack project, you often need to run multiple processes simultaneously—a frontend dev server, a backend API, database containers, workers, etc. Corsa gives you:
+When working on a full-stack project, you often need to run multiple processes simultaneously—a frontend dev server, a backend API, database containers, workers, etc. corsa gives you:
 
 - **Single dashboard** for all your processes with tabbed log viewing
 - **Real-time logs** with search and ANSI color support
@@ -112,7 +112,7 @@ corsa mcp
 
 ## Configuration
 
-Corsa is configured via a TOML file. By default, it looks for `corsa.config.toml` in the current directory.
+corsa is configured via a TOML file. By default, it looks for `corsa.config.toml` in the current directory.
 
 ### Minimal Example
 
@@ -170,7 +170,7 @@ For a complete reference of all configuration options, see the [sample config fi
 
 ## Themes
 
-Corsa includes several built-in themes. Set in your config:
+corsa includes several built-in themes. Set in your config:
 
 ```toml
 [ui]
@@ -181,7 +181,7 @@ Available themes: `default` (Moss), `mist`, `cappuccino`, `synthwave`, `terminal
 
 ## MCP Integration
 
-Corsa can expose an HTTP API for AI agents (Cursor, Claude, etc.) via the Model Context Protocol.
+corsa can expose an HTTP API for AI agents (Cursor, Claude, etc.) via the Model Context Protocol.
 
 ### Enable in Config
 

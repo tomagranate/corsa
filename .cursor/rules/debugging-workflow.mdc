@@ -43,7 +43,7 @@ const log = createDebugLogger("ProcessManager");
 log("stream read", { bytes: 37, waitMs: 101 });
 ```
 
-## 3. Run Corsa and Capture Logs
+## 3. Run corsa and Capture Logs
 
 ```bash
 # Run with debug config in background

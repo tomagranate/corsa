@@ -1,6 +1,7 @@
 import { type CliRenderer, TextAttributes } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AboutModal } from "./components/AboutModal";
 import { CommandPalette, commandPalette } from "./components/CommandPalette";
 import { HelpBar, type HelpBarMode } from "./components/HelpBar";
 import { HomeTab } from "./components/HomeTab";
@@ -14,6 +15,7 @@ import type { Config } from "./lib/config";
 import { HealthChecker, type HealthStateMap } from "./lib/health";
 import type { ProcessManager } from "./lib/processes";
 import { useTheme } from "./lib/theme";
+import { type UpdateState, updateChecker } from "./lib/update-checker";
 import type { ToolState } from "./types";
 
 /** Per-tab search state */
@@ -38,6 +40,8 @@ interface AppProps {
 	initialTools: ToolState[];
 	renderer: CliRenderer;
 	config: Config;
+	/** Path to the loaded config file */
+	configPath: string;
 	/** Initial line wrap setting from preferences */
 	initialLineWrap?: boolean;
 	/** Callback when line wrap changes (to save preference) */
@@ -57,6 +61,7 @@ export function App({
 	initialTools,
 	renderer,
 	config: initialConfig,
+	configPath,
 	initialLineWrap = true,
 	onLineWrapChange,
 	onRegisterConfigUpdate,
@@ -216,6 +221,19 @@ export function App({
 		}
 	}, [onRegisterGetHealthStatus]);
 
+	// Background update checker - check on mount and subscribe to changes
+	useEffect(() => {
+		// Subscribe to update state changes
+		const unsubscribe = updateChecker.subscribe((state) => {
+			setUpdateState(state);
+		});
+
+		// Trigger update check (will only fetch if > 4 hours since last check)
+		updateChecker.checkForUpdates();
+
+		return unsubscribe;
+	}, []);
+
 	// Watch for process status changes and trigger immediate health checks
 	const prevToolStatusesForHealthRef = useRef<Map<string, string>>(new Map());
 	useEffect(() => {
@@ -250,7 +268,11 @@ export function App({
 	const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 	const [shortcutsOpen, setShortcutsOpen] = useState(false);
 	const [themePickerOpen, setThemePickerOpen] = useState(false);
+	const [aboutModalOpen, setAboutModalOpen] = useState(false);
 	const [lineWrap, setLineWrap] = useState(initialLineWrap);
+	const [updateState, setUpdateState] = useState<UpdateState>(
+		updateChecker.getState(),
+	);
 	const { width: terminalWidth } = useTerminalDimensions();
 
 	// Get search state for a specific tab (returns default if not set)
@@ -517,6 +539,12 @@ export function App({
 				category: "Help",
 				action: () => setShortcutsOpen(true),
 			},
+			{
+				id: "about",
+				label: "About corsa",
+				category: "Help",
+				action: () => setAboutModalOpen(true),
+			},
 		];
 
 		// Add theme switching command (opens theme picker modal)
@@ -618,7 +646,12 @@ export function App({
 				return; // ThemePicker handles its own Ctrl+C
 			}
 
-			// Priority 4: Exit the program
+			// Priority 5: Close about modal if open (handled by modal itself)
+			if (aboutModalOpen) {
+				return; // AboutModal handles its own Ctrl+C
+			}
+
+			// Priority 6: Exit the program
 			await processManager.cleanup();
 			renderer.stop();
 			renderer.destroy();
@@ -627,7 +660,12 @@ export function App({
 		}
 
 		// Skip most key handling when modals are open (they handle their own input)
-		if (commandPaletteOpen || shortcutsOpen || themePickerOpen) {
+		if (
+			commandPaletteOpen ||
+			shortcutsOpen ||
+			themePickerOpen ||
+			aboutModalOpen
+		) {
 			return;
 		}
 
@@ -997,7 +1035,13 @@ export function App({
 					{horizontalTabPosition === "bottom" && tabBarComponent}
 				</box>
 			)}
-			<HelpBar theme={theme} mode={getHelpBarMode()} width={terminalWidth} />
+			<HelpBar
+				theme={theme}
+				mode={getHelpBarMode()}
+				width={terminalWidth}
+				showVersion={useVertical}
+				isUpdateAvailable={updateState.isUpdateAvailable}
+			/>
 			<ToastContainer theme={theme} topOffset={calculateToastOffset()} />
 			<CommandPalette
 				theme={theme}
@@ -1014,6 +1058,13 @@ export function App({
 				isOpen={themePickerOpen}
 				onClose={() => setThemePickerOpen(false)}
 			/>
+			<AboutModal
+				isOpen={aboutModalOpen}
+				onClose={() => setAboutModalOpen(false)}
+				theme={theme}
+				updateState={updateState}
+				configPath={configPath}
+			/>
 		</box>
 	);
 
@@ -1021,6 +1072,7 @@ export function App({
 		if (commandPaletteOpen) return "commandPalette";
 		if (shortcutsOpen) return "shortcuts";
 		if (themePickerOpen) return "commandPalette"; // Use same hints as command palette
+		if (aboutModalOpen) return "commandPalette"; // Use same hints as command palette
 		if (currentSearchState.searchMode) return "search";
 		return "normal";
 	}
