@@ -19,6 +19,12 @@ interface AboutModalProps {
 	updateState: UpdateState;
 	/** Path to the loaded config file (if any) */
 	configPath?: string;
+	/** Whether we're currently checking for updates */
+	isCheckingForUpdates?: boolean;
+	/** Called when Check for Updates button is clicked */
+	onCheckForUpdates?: () => void;
+	/** Called when Update button is clicked */
+	onUpdate?: () => void;
 }
 
 /**
@@ -95,6 +101,9 @@ export function AboutModal({
 	theme,
 	updateState,
 	configPath,
+	isCheckingForUpdates = false,
+	onCheckForUpdates,
+	onUpdate,
 }: AboutModalProps) {
 	const { colors } = theme;
 	const { width: terminalWidth, height: terminalHeight } =
@@ -132,10 +141,14 @@ export function AboutModal({
 	// Installation method - format nicely for display
 	const installMethod = detectInstallMethod();
 	const installMethodDisplay: Record<string, string> = {
-		npm: "npm",
-		pnpm: "pnpm",
-		bun: "bun",
-		yarn: "yarn",
+		"npm-global": "npm (global)",
+		"npm-local": "npm (local)",
+		"pnpm-global": "pnpm (global)",
+		"pnpm-local": "pnpm (local)",
+		"bun-global": "bun (global)",
+		"bun-local": "bun (local)",
+		"yarn-global": "yarn (global)",
+		"yarn-local": "yarn (local)",
 		brew: "Homebrew",
 		direct: "Binary",
 		development: "Development",
@@ -218,21 +231,59 @@ export function AboutModal({
 					backgroundColor={colors.surface2}
 					paddingTop={1}
 				>
-					{/* Version */}
-					<InfoRow label="Version" value={currentVersion} theme={theme} />
+					{/* Version with sync icon */}
+					<box
+						height={1}
+						paddingLeft={2}
+						paddingRight={2}
+						flexDirection="row"
+						justifyContent="space-between"
+					>
+						<box flexDirection="row">
+							<text fg={colors.textDim}>{"Version".padEnd(10)}</text>
+							<text fg={colors.text}>{currentVersion}</text>
+						</box>
+						{onCheckForUpdates && (
+							<text
+								fg={isCheckingForUpdates ? colors.textMuted : colors.textDim}
+								{...({
+									onMouseDown: isCheckingForUpdates
+										? undefined
+										: onCheckForUpdates,
+								} as Record<string, unknown>)}
+							>
+								{isCheckingForUpdates ? "⟳" : "↻"}
+							</text>
+						)}
+					</box>
 
-					{/* Update status */}
+					{/* Update status and button */}
 					{updateState.isUpdateAvailable && updateState.latestVersion && (
 						<box
 							height={1}
 							paddingLeft={2}
 							paddingRight={2}
 							flexDirection="row"
+							justifyContent="space-between"
 						>
-							<text fg={colors.textDim}>{"".padEnd(10)}</text>
-							<text fg={colors.accent} attributes={TextAttributes.BOLD}>
-								Update available: {updateState.latestVersion}
-							</text>
+							<box flexDirection="row">
+								<text fg={colors.textDim}>{"".padEnd(10)}</text>
+								<text fg={colors.accent}>
+									v{updateState.latestVersion} available
+								</text>
+							</box>
+							{onUpdate && (
+								<text
+									fg={colors.accentForeground}
+									bg={colors.accent}
+									attributes={TextAttributes.BOLD}
+									{...({
+										onMouseDown: onUpdate,
+									} as Record<string, unknown>)}
+								>
+									{" Update "}
+								</text>
+							)}
 						</box>
 					)}
 
