@@ -1026,10 +1026,10 @@ export function App({
 						fg={theme.colors.warningForeground}
 					>
 						{terminalWidth < 50
-							? `${StatusIcons.WARNING} Shutting down... ^C force`
+							? `${StatusIcons.WARNING} Shutting down...`
 							: terminalWidth < 70
-								? `${StatusIcons.WARNING} Shutting down gracefully... Ctrl+C to force`
-								: `${StatusIcons.WARNING} WARNING: ${shuttingDownCount} process${shuttingDownCount > 1 ? "es" : ""} shutting down gracefully. Please wait... Ctrl+C to force quit.`}
+								? `${StatusIcons.WARNING} Shutting down gracefully...`
+								: `${StatusIcons.WARNING} WARNING: ${shuttingDownCount} process${shuttingDownCount > 1 ? "es" : ""} shutting down gracefully. Please wait...`}
 					</text>
 				</box>
 			)}
@@ -1101,6 +1101,7 @@ export function App({
 	);
 
 	function getHelpBarMode(): HelpBarMode {
+		if (hasShuttingDown) return "shuttingDown";
 		if (commandPaletteOpen) return "commandPalette";
 		if (shortcutsOpen) return "shortcuts";
 		if (themePickerOpen) return "commandPalette"; // Use same hints as command palette

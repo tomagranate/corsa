@@ -1,7 +1,12 @@
 import packageJson from "../../../package.json";
 import type { Theme } from "../../lib/theme";
 
-export type HelpBarMode = "normal" | "search" | "commandPalette" | "shortcuts";
+export type HelpBarMode =
+	| "normal"
+	| "search"
+	| "commandPalette"
+	| "shortcuts"
+	| "shuttingDown";
 
 interface HelpBarProps {
 	theme: Theme;
@@ -53,6 +58,16 @@ function getHintsForMode(mode: HelpBarMode): HintItem[] {
 					compactAction: "ok",
 				},
 				{ key: "Esc", compactKey: "⎋", action: "cancel", compactAction: "×" },
+			];
+
+		case "shuttingDown":
+			return [
+				{
+					key: "Ctrl+C",
+					compactKey: "^C",
+					action: "force quit",
+					compactAction: "quit",
+				},
 			];
 
 		case "commandPalette":

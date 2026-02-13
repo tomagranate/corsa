@@ -118,7 +118,8 @@ export function TabBar({
 		// scrollOffset and lastVisibleIndex are tool array indices
 		const toolActiveIndex = homeEnabled ? activeIndex - 1 : activeIndex;
 
-		if (vertical || toolActiveIndex < 0 || toolActiveIndex >= tools.length) {
+		// Skip for vertical mode
+		if (vertical) {
 			return;
 		}
 
@@ -148,6 +149,20 @@ export function TabBar({
 		// Reset the pending flag
 		pendingNavigationRef.current = false;
 
+		// Handle home tab selection (toolActiveIndex === -1 when homeEnabled and activeIndex === 0)
+		// Home tab is only visible when scrollOffset === 0, so scroll there if needed
+		if (toolActiveIndex < 0) {
+			if (homeEnabled && scrollOffset > 0) {
+				setScrollOffset(0);
+			}
+			return;
+		}
+
+		// Skip invalid tool indices
+		if (toolActiveIndex >= tools.length) {
+			return;
+		}
+
 		// Check if active tab is in the visible range [scrollOffset, lastVisibleIndex]
 		// Use toolActiveIndex (tool array index) for comparison with scrollOffset/lastVisibleIndex
 		const isActiveVisible =
@@ -163,7 +178,7 @@ export function TabBar({
 				const newOffset = calculateMinOffsetForTab(
 					tools,
 					toolActiveIndex,
-					width,
+					effectiveWidth,
 					showTabNumbers,
 				);
 				setScrollOffset(newOffset);
