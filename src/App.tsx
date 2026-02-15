@@ -213,14 +213,32 @@ export function App({
 	}, [needsHealthChecker]);
 
 	// Register health status getter for MCP API
+	// Read directly from HealthChecker instance (always up-to-date) instead of
+	// from healthStatesRef which lags one render cycle behind
 	useEffect(() => {
 		if (onRegisterGetHealthStatus) {
 			onRegisterGetHealthStatus((toolName: string) => {
-				const healthState = healthStatesRef.current.get(toolName);
-				return healthState?.status ?? null;
+				return (
+					healthCheckerRef.current?.getHealthState(toolName)?.status ?? null
+				);
 			});
 		}
 	}, [onRegisterGetHealthStatus]);
+
+	// Register restart callback to reset health state directly.
+	// This avoids relying on React to detect the status transition (running → stopped → running),
+	// which can be batched away, causing the health state to never be reset on restart.
+	useEffect(() => {
+		if (!needsHealthChecker) return;
+
+		processManager.onToolRestart = (toolName: string) => {
+			healthCheckerRef.current?.resetHealthState(toolName);
+		};
+
+		return () => {
+			processManager.onToolRestart = undefined;
+		};
+	}, [needsHealthChecker, processManager]);
 
 	// Background update checker - check on mount and subscribe to changes
 	useEffect(() => {

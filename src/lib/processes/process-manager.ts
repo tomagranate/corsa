@@ -54,6 +54,12 @@ export class ProcessManager {
 	/** Subscribers for change notifications */
 	private subscribers = new Map<SubscriberKey, Set<ChangeCallback>>();
 
+	/**
+	 * Optional callback fired when a tool is about to be restarted.
+	 * Used to reset health state before the restart begins.
+	 */
+	onToolRestart?: (toolName: string) => void;
+
 	constructor(maxLogLines: number = 100000) {
 		this.maxLogLines = maxLogLines;
 	}
@@ -213,6 +219,13 @@ export class ProcessManager {
 				tool.startTime = undefined;
 				// Remove PID from file when process exits
 				await removePidFromFile(index, this.configPath);
+
+				// If a new process has been spawned (e.g., via restart), skip
+				// the notification and exit log to avoid corrupting new process state
+				if (tool.process !== null) {
+					return;
+				}
+
 				// addLog will also notify, but notify here for immediate status update
 				this.notifyChange(index);
 				this.addLog(index, `\n[Process exited with code ${exitCode}]`);
@@ -406,6 +419,11 @@ export class ProcessManager {
 	async restartTool(index: number): Promise<void> {
 		const tool = this.tools[index];
 		if (!tool) return;
+
+		// Notify listeners before restart (e.g., to reset health state to "starting"
+		// before the old process is killed, so periodic health checks that fire during
+		// the restart window see "starting" status and use retry logic)
+		this.onToolRestart?.(tool.config.name);
 
 		// If running, stop first (graceful with force kill on timeout)
 		if (

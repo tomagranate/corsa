@@ -348,6 +348,59 @@ describe("ProcessManager", () => {
 		await expect(processManager.restartTool(999)).resolves.toBeUndefined();
 	});
 
+	test("restartTool - fires onToolRestart callback before restarting", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "my-server",
+				command: "sleep",
+				args: ["10"],
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+		expect(processManager.getTool(0)?.status).toBe("running");
+
+		// Track when onToolRestart is called relative to the restart
+		const callLog: string[] = [];
+		processManager.onToolRestart = (toolName: string) => {
+			callLog.push(`restart:${toolName}`);
+			// At this point, the old process should still be running
+			// (callback fires before kill)
+			expect(processManager.getTool(0)?.status).toBe("running");
+		};
+
+		await processManager.restartTool(0);
+
+		// Callback should have been called with the tool name
+		expect(callLog).toEqual(["restart:my-server"]);
+		// Process should be running with a new PID
+		expect(processManager.getTool(0)?.status).toBe("running");
+	});
+
+	test("restartTool - fires onToolRestart callback even for stopped processes", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "my-server",
+				command: "sleep",
+				args: ["10"],
+			},
+		];
+
+		await processManager.initialize(configs);
+		// Don't start - process is stopped
+
+		const restartedTools: string[] = [];
+		processManager.onToolRestart = (toolName: string) => {
+			restartedTools.push(toolName);
+		};
+
+		await processManager.restartTool(0);
+
+		expect(restartedTools).toEqual(["my-server"]);
+		expect(processManager.getTool(0)?.status).toBe("running");
+	});
+
 	test("clearLogs - clears logs for a tool", async () => {
 		const configs: ToolConfig[] = [
 			{

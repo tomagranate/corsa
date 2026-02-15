@@ -185,14 +185,20 @@ export class HealthChecker {
 		const newFailureCount = currentState.failureCount + 1;
 
 		let newStatus: HealthStatus;
-		if (currentState.status === "starting" && newFailureCount < maxRetries) {
-			// Still starting, haven't exhausted retries
-			newStatus = "starting";
-		} else if (newFailureCount >= maxRetries) {
-			// Exhausted retries - mark as unhealthy
+		if (newFailureCount >= maxRetries) {
+			// Exhausted retries - mark as unhealthy regardless of current state
 			newStatus = "unhealthy";
+		} else if (
+			currentState.status === "starting" ||
+			currentState.status === "healthy"
+		) {
+			// Still within retry window - keep current status.
+			// For "starting": process hasn't come up yet, give it more time.
+			// For "healthy": could be a transient failure (e.g., during restart),
+			//   don't immediately mark unhealthy on a single failed check.
+			newStatus = currentState.status;
 		} else {
-			// Was healthy, now failed - immediate unhealthy
+			// Already unhealthy, stay unhealthy
 			newStatus = "unhealthy";
 		}
 

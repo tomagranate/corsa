@@ -407,16 +407,16 @@ describe("HealthChecker", () => {
 	});
 
 	describe("healthy to unhealthy transition", () => {
-		test("should immediately mark as unhealthy when healthy tool fails", async () => {
+		test("should stay healthy on first failure and go unhealthy after retries exhausted", async () => {
 			const tools: ToolConfig[] = [
 				{
 					name: "tool1",
 					command: "cmd1",
-					healthCheck: { url: "http://localhost:3000/health", retries: 5 },
+					healthCheck: { url: "http://localhost:3000/health", retries: 3 },
 				},
 			];
 
-			// First call succeeds
+			// First call succeeds, rest fail
 			let callCount = 0;
 			global.fetch = createMockFetch(() => {
 				callCount++;
@@ -432,9 +432,178 @@ describe("HealthChecker", () => {
 			await checker.checkNow("tool1");
 			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
 
-			// Second check - should immediately go unhealthy (no retry for healthy->unhealthy)
+			// Second check - first failure, should stay healthy (grace period)
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(1);
+
+			// Third check - second failure, still within retries
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(2);
+
+			// Fourth check - third failure, retries exhausted → unhealthy
 			await checker.checkNow("tool1");
 			expect(checker.getHealthState("tool1")?.status).toBe("unhealthy");
+		});
+
+		test("should recover from transient failure without going unhealthy", async () => {
+			const tools: ToolConfig[] = [
+				{
+					name: "tool1",
+					command: "cmd1",
+					healthCheck: { url: "http://localhost:3000/health", retries: 3 },
+				},
+			];
+
+			// Success, fail, success pattern (simulates transient failure)
+			let callCount = 0;
+			global.fetch = createMockFetch(() => {
+				callCount++;
+				if (callCount === 2) {
+					// Only second call fails
+					return Promise.resolve(new Response("Error", { status: 500 }));
+				}
+				return Promise.resolve(new Response("OK", { status: 200 }));
+			});
+
+			checker.initialize(tools);
+
+			// First check - healthy
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+
+			// Second check - transient failure, stays healthy
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+
+			// Third check - recovers, back to healthy with reset failure count
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(0);
+		});
+	});
+
+	describe("restart scenario", () => {
+		test("should show starting (not unhealthy) when health state is reset during restart", async () => {
+			const tools: ToolConfig[] = [
+				{
+					name: "tool1",
+					command: "cmd1",
+					healthCheck: { url: "http://localhost:3000/health", retries: 3 },
+				},
+			];
+
+			// Start with success, then fail (simulates restart - service goes down)
+			let shouldSucceed = true;
+			global.fetch = createMockFetch(() => {
+				if (shouldSucceed) {
+					return Promise.resolve(new Response("OK", { status: 200 }));
+				}
+				return Promise.resolve(new Response("Error", { status: 500 }));
+			});
+
+			checker.initialize(tools);
+
+			// Process starts and becomes healthy
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+
+			// Simulate restart: reset health state THEN service goes down
+			// (This is what onToolRestart does)
+			checker.resetHealthState("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(0);
+
+			// Service is down during restart - health checks fail
+			shouldSucceed = false;
+			await checker.checkNow("tool1");
+
+			// Should still be "starting" (not "unhealthy") because retries protect us
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(1);
+
+			// Another failed check while restarting
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(2);
+
+			// Service comes back up
+			shouldSucceed = true;
+			await checker.checkNow("tool1");
+
+			// Should be healthy again
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(0);
+		});
+
+		test("should go unhealthy if restart takes too long (retries exhausted)", async () => {
+			const tools: ToolConfig[] = [
+				{
+					name: "tool1",
+					command: "cmd1",
+					healthCheck: { url: "http://localhost:3000/health", retries: 2 },
+				},
+			];
+
+			global.fetch = createMockFetch(() =>
+				Promise.resolve(new Response("OK", { status: 200 })),
+			);
+
+			checker.initialize(tools);
+
+			// Process starts and becomes healthy
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("healthy");
+
+			// Simulate restart: reset health state
+			checker.resetHealthState("tool1");
+
+			// Service stays down long enough to exhaust retries
+			global.fetch = createMockFetch(() =>
+				Promise.resolve(new Response("Error", { status: 500 })),
+			);
+
+			// First failure - still starting
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+
+			// Second failure - retries exhausted → unhealthy
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("unhealthy");
+		});
+
+		test("should reset failure count when health state is reset", async () => {
+			const tools: ToolConfig[] = [
+				{
+					name: "tool1",
+					command: "cmd1",
+					healthCheck: { url: "http://localhost:3000/health", retries: 3 },
+				},
+			];
+
+			// All checks fail
+			global.fetch = createMockFetch(() =>
+				Promise.resolve(new Response("Error", { status: 500 })),
+			);
+
+			checker.initialize(tools);
+
+			// Exhaust retries → unhealthy
+			await checker.checkNow("tool1");
+			await checker.checkNow("tool1");
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("unhealthy");
+
+			// Reset (simulates restart)
+			checker.resetHealthState("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(0);
+
+			// Should get fresh retries
+			await checker.checkNow("tool1");
+			expect(checker.getHealthState("tool1")?.status).toBe("starting");
+			expect(checker.getHealthState("tool1")?.failureCount).toBe(1);
 		});
 	});
 });
