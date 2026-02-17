@@ -64,11 +64,13 @@ export function HomeTab({
 		starting: servicesWithFeatures.filter(
 			({ tool }) =>
 				tool.status !== "waiting" &&
+				tool.status !== "stopped" &&
 				healthStates.get(tool.config.name)?.status === "starting",
 		).length,
 		unhealthy: servicesWithFeatures.filter(
 			({ tool }) =>
 				tool.status !== "waiting" &&
+				tool.status !== "stopped" &&
 				healthStates.get(tool.config.name)?.status === "unhealthy",
 		).length,
 		stopped: servicesWithFeatures.filter(
@@ -318,11 +320,13 @@ function ServiceCard({
 					</box>
 
 					{/* Health indicator on the right - show "waiting" when waiting for deps */}
+					{/* Hide health state when process exited cleanly (stopped) */}
 					{tool.status === "waiting" ? (
 						<box>
 							<text fg={colors.warning}>{StatusIcons.WAITING} waiting</text>
 						</box>
 					) : (
+						tool.status !== "stopped" &&
 						hasHealthCheck &&
 						healthState && (
 							<box>
