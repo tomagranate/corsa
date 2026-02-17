@@ -235,3 +235,12 @@ command = "bun"
 args = ["test-scripts/searchable-patterns.js"]
 cwd = "."
 cleanup = []
+
+# === Interactive / PTY Testing ===
+[[tools]]
+name = "interactive-prompt"
+command = "bun"
+args = ["test-scripts/interactive-prompt.js"]
+cwd = "."
+interactive = true
+description = "Interactive prompt (PTY) — press 'i' to enter input mode"

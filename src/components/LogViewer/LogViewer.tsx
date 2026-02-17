@@ -129,6 +129,8 @@ interface LogViewerProps {
 	lineWrap?: boolean;
 	/** Width of sidebar (when in vertical layout mode), used for truncation calculation */
 	sidebarWidth?: number;
+	/** Whether the TUI is in input mode (forwarding keystrokes to process PTY) */
+	inputMode?: boolean;
 }
 
 export const LogViewer = React.memo(function LogViewer({
@@ -147,6 +149,7 @@ export const LogViewer = React.memo(function LogViewer({
 	showLineNumbers = "auto",
 	lineWrap = true,
 	sidebarWidth = 0,
+	inputMode = false,
 }: LogViewerProps) {
 	const { colors, ansiPalette } = theme;
 	const scrollboxRef = useRef<ScrollBoxRenderable>(null);
@@ -526,6 +529,9 @@ export const LogViewer = React.memo(function LogViewer({
 
 	// Handle keyboard input
 	useKeyboard((key) => {
+		// In input mode, App.tsx handles all keys — don't process here
+		if (inputMode) return;
+
 		// Handle search mode input
 		if (searchMode) {
 			if (key.name === "escape") {
@@ -993,6 +999,22 @@ export const LogViewer = React.memo(function LogViewer({
 					backgroundColor={colors.surface0}
 					marginLeft={needsLeftMargin ? 1 : 0}
 				/>
+			)}
+
+			{/* Input mode indicator */}
+			{inputMode && (
+				<box
+					height={1}
+					width="100%"
+					paddingLeft={1}
+					paddingRight={1}
+					backgroundColor={colors.accent}
+				>
+					<text fg={colors.surface0}>
+						<span attributes={TextAttributes.BOLD}>INPUT MODE</span>
+						{" — Type to send input, Esc to exit"}
+					</text>
+				</box>
 			)}
 		</box>
 	);

@@ -6,7 +6,9 @@ export type HelpBarMode =
 	| "search"
 	| "commandPalette"
 	| "shortcuts"
-	| "shuttingDown";
+	| "shuttingDown"
+	| "input"
+	| "interactive";
 
 interface HelpBarProps {
 	theme: Theme;
@@ -86,6 +88,45 @@ function getHintsForMode(mode: HelpBarMode): HintItem[] {
 					compactAction: "sel",
 				},
 				{ key: "Esc", compactKey: "⎋", action: "close", compactAction: "×" },
+			];
+
+		case "input":
+			return [
+				{
+					key: "Esc",
+					compactKey: "⎋",
+					action: "exit input",
+					compactAction: "exit",
+				},
+				{
+					key: "Enter",
+					compactKey: "↵",
+					action: "send newline",
+					compactAction: "nl",
+				},
+			];
+
+		case "interactive":
+			return [
+				{
+					key: "i",
+					compactKey: "i",
+					action: "input",
+					compactAction: "inp",
+				},
+				{
+					key: "Ctrl+P",
+					compactKey: "^P",
+					action: "palette",
+					compactAction: "cmd",
+				},
+				{
+					key: "?",
+					compactKey: "?",
+					action: "shortcuts",
+					compactAction: "keys",
+				},
+				{ key: "/", compactKey: "/", action: "search", compactAction: "find" },
 			];
 
 		default: {

@@ -5,6 +5,7 @@ import {
 	getValidDependencies,
 	resolveDependencies,
 } from "./dependency-resolver";
+import { LineParser } from "./line-parser";
 import {
 	deletePidFile,
 	loadPidFile,
@@ -13,6 +14,23 @@ import {
 	updatePidFile,
 } from "./pid-file";
 import { isProcessRunning, killProcessGracefully } from "./process-utils";
+
+/**
+ * PTY terminal interface for interactive processes.
+ * These types augment the Bun.spawn() `terminal` option which was added
+ * after the @types/bun version used in this project.
+ */
+interface PtyTerminal {
+	readonly closed: boolean;
+	write(data: string | ArrayBufferView | ArrayBuffer): number;
+	resize(cols: number, rows: number): void;
+	close(): void;
+}
+
+/** Subprocess extended with optional PTY terminal */
+type SubprocessWithTerminal = ReturnType<typeof Bun.spawn> & {
+	terminal?: PtyTerminal;
+};
 
 /** Callback to check if a tool is ready (for dependency waiting) */
 export type IsToolReadyCallback = (toolName: string) => boolean;
@@ -160,14 +178,41 @@ export class ProcessManager {
 		}
 
 		try {
-			const { command, args = [], cwd, env } = tool.config;
+			const { command, args = [], cwd, env, interactive } = tool.config;
 
-			const proc = Bun.spawn([command, ...args], {
-				cwd: cwd || process.cwd(),
-				env: { ...process.env, ...env },
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			const spawnEnv = { ...process.env, ...env };
+
+			let proc: SubprocessWithTerminal;
+
+			if (interactive) {
+				// PTY mode: process sees a real terminal
+				const ptyParser = new LineParser((line, isReplacement) => {
+					this.addLog(index, line, false, isReplacement);
+				});
+
+				// Use type assertion: the `terminal` option is supported by the Bun
+				// runtime but not yet in the installed @types/bun
+				proc = Bun.spawn([command, ...args], {
+					cwd: cwd || process.cwd(),
+					env: { ...spawnEnv, TERM: "xterm-256color" },
+					terminal: {
+						cols: 120,
+						rows: 30,
+						data: (_terminal: PtyTerminal, data: Uint8Array) => {
+							ptyParser.write(data);
+							ptyParser.flushPartial();
+						},
+					},
+				} as Parameters<typeof Bun.spawn>[1]) as SubprocessWithTerminal;
+			} else {
+				// Piped mode: separate stdout/stderr streams
+				proc = Bun.spawn([command, ...args], {
+					cwd: cwd || process.cwd(),
+					env: spawnEnv,
+					stdout: "pipe",
+					stderr: "pipe",
+				}) as SubprocessWithTerminal;
+			}
 
 			tool.process = proc;
 			tool.status = "running";
@@ -183,26 +228,35 @@ export class ProcessManager {
 			// Save PID to file for persistence
 			await this.savePidToFile(index);
 
-			// Handle stdout
-			if (proc.stdout) {
-				const reader =
-					proc.stdout.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-				this.readStream(reader, (line, isReplacement) => {
-					this.addLog(index, line, false, isReplacement);
-				});
-			}
+			if (!interactive) {
+				// Handle stdout (piped mode only; PTY mode uses data callback)
+				if (proc.stdout && typeof proc.stdout !== "number") {
+					const reader = (
+						proc.stdout as ReadableStream<Uint8Array>
+					).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+					this.readStream(reader, (line, isReplacement) => {
+						this.addLog(index, line, false, isReplacement);
+					});
+				}
 
-			// Handle stderr
-			if (proc.stderr) {
-				const reader =
-					proc.stderr.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-				this.readStream(reader, (line, isReplacement) => {
-					this.addLog(index, line, true, isReplacement);
-				});
+				// Handle stderr (piped mode only; PTY merges into single stream)
+				if (proc.stderr && typeof proc.stderr !== "number") {
+					const reader = (
+						proc.stderr as ReadableStream<Uint8Array>
+					).getReader() as ReadableStreamDefaultReader<Uint8Array>;
+					this.readStream(reader, (line, isReplacement) => {
+						this.addLog(index, line, true, isReplacement);
+					});
+				}
 			}
 
 			// Handle process exit
 			proc.exited.then(async (exitCode) => {
+				// Close PTY terminal on exit
+				if (interactive && proc.terminal && !proc.terminal.closed) {
+					proc.terminal.close();
+				}
+
 				// Only update status if not already shutting down (to preserve shutdown state)
 				if (tool.status !== "shuttingDown") {
 					tool.status = exitCode === 0 ? "stopped" : "error";
@@ -238,89 +292,38 @@ export class ProcessManager {
 	}
 
 	/**
-	 * Read a stream and emit lines, handling carriage returns for progress bars.
-	 *
-	 * Carriage return (`\r`) behavior:
-	 * - `\r` within a complete line (ending with \n) means display content after last `\r`
-	 * - `\r\n` is treated as a normal line ending (Windows style)
-	 * - Incomplete lines with `\r` (real-time progress updates) trigger replacement
-	 *
-	 * Replacement logic:
-	 * - Complete lines are always NEW lines (isReplacement = false)
-	 * - Incomplete lines with `\r` are real-time updates (isReplacement = true)
+	 * Write data to an interactive process's PTY.
+	 * @returns true if data was written, false if tool is not interactive or not running
+	 */
+	writeToProcess(index: number, data: string): boolean {
+		const tool = this.tools[index];
+		if (!tool?.process) return false;
+		const proc = tool.process as SubprocessWithTerminal;
+		if (!proc.terminal) return false;
+		try {
+			proc.terminal.write(data);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Read a piped stream and emit lines using LineParser.
 	 */
 	private async readStream(
 		reader: ReadableStreamDefaultReader<Uint8Array>,
 		onLine: (line: string, isReplacement: boolean) => void,
 	): Promise<void> {
-		const decoder = new TextDecoder();
-		let buffer = "";
-		// Track if the last emitted line was an incomplete replacement
-		// so we know if we should continue replacing or start fresh
-		let lastWasIncompleteReplacement = false;
+		const parser = new LineParser(onLine);
 
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-
-				// Process complete lines (ending with \n)
-				let newlineIdx = buffer.indexOf("\n");
-				while (newlineIdx !== -1) {
-					let line = buffer.slice(0, newlineIdx);
-					buffer = buffer.slice(newlineIdx + 1);
-
-					// Handle \r\n (Windows line ending) - strip trailing \r
-					if (line.endsWith("\r")) {
-						line = line.slice(0, -1);
-					}
-
-					// Handle \r within the line - take last segment after any \r
-					// This simulates terminal "carriage return" behavior where
-					// \r moves cursor to start of line, overwriting previous content
-					const crIdx = line.lastIndexOf("\r");
-					if (crIdx >= 0) {
-						line = line.slice(crIdx + 1);
-					}
-
-					// Complete lines are always emitted as NEW lines.
-					// However, if the previous emission was an incomplete replacement,
-					// this complete line should replace it (finalizing the progress bar).
-					const isReplacement = lastWasIncompleteReplacement;
-					lastWasIncompleteReplacement = false;
-
-					onLine(line, isReplacement);
-
-					// Check for more newlines in the remaining buffer
-					newlineIdx = buffer.indexOf("\n");
-				}
-
-				// Handle incomplete lines with \r (real-time progress bar updates)
-				// If buffer contains \r, the content after last \r is the "current" line
-				// Emit it as a replacement so it updates the display in real-time
-				const crIdx = buffer.lastIndexOf("\r");
-				if (crIdx >= 0) {
-					const currentLine = buffer.slice(crIdx + 1);
-					buffer = currentLine; // Keep only content after \r
-					if (currentLine.length > 0) {
-						onLine(currentLine, true); // Emit as replacement
-						lastWasIncompleteReplacement = true;
-					}
-				}
+				parser.write(value);
 			}
-
-			// Handle remaining buffer when stream ends
-			if (buffer) {
-				// Process any final \r in the remaining buffer
-				const crIdx = buffer.lastIndexOf("\r");
-				const finalLine = crIdx >= 0 ? buffer.slice(crIdx + 1) : buffer;
-				if (finalLine.length > 0) {
-					// If there's remaining content, it replaces the last incomplete line
-					onLine(finalLine, lastWasIncompleteReplacement);
-				}
-			}
+			parser.flush();
 		} catch (_error) {
 			// Stream closed or error
 		}
@@ -377,6 +380,20 @@ export class ProcessManager {
 		return this.tools[index];
 	}
 
+	/**
+	 * Close the PTY terminal for an interactive tool if open.
+	 */
+	private closeTerminal(tool: ToolState): void {
+		try {
+			const proc = tool.process as SubprocessWithTerminal | null;
+			if (proc?.terminal && !proc.terminal.closed) {
+				proc.terminal.close();
+			}
+		} catch {
+			// Ignore errors closing terminal
+		}
+	}
+
 	async stopTool(index: number): Promise<void> {
 		const tool = this.tools[index];
 		if (!tool || !tool.process) return;
@@ -397,6 +414,8 @@ export class ProcessManager {
 				// Still running after timeout - will be force killed in cleanup
 				return;
 			} else {
+				// Close PTY terminal if interactive
+				this.closeTerminal(tool);
 				// Process exited
 				tool.status = "stopped";
 				tool.process = null;
@@ -407,6 +426,7 @@ export class ProcessManager {
 			}
 		} catch (_error) {
 			// Ignore errors
+			this.closeTerminal(tool);
 			tool.status = "stopped";
 			tool.process = null;
 			tool.pid = undefined;
@@ -448,6 +468,7 @@ export class ProcessManager {
 				// Ignore errors during stop
 			}
 
+			this.closeTerminal(tool);
 			tool.process = null;
 			tool.pid = undefined;
 			tool.startTime = undefined;
@@ -499,6 +520,7 @@ export class ProcessManager {
 					"[SHUTDOWN] Process did not exit gracefully, forcing termination...",
 				);
 				tool.process.kill("SIGKILL");
+				this.closeTerminal(tool);
 				tool.status = "stopped";
 				if (this.isShuttingDown) {
 					this.recentlyStopped.add(i);
@@ -635,6 +657,7 @@ export class ProcessManager {
 			const tool = this.tools[i];
 			if (tool?.process && !tool.process.killed) {
 				tool.process.kill("SIGKILL");
+				this.closeTerminal(tool);
 				tool.process = null;
 				tool.status = "stopped";
 			}

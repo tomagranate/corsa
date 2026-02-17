@@ -14,7 +14,7 @@ import { StatusIcons } from "./constants";
 import { useToolsList } from "./hooks";
 import type { Config } from "./lib/config";
 import { HealthChecker, type HealthStateMap } from "./lib/health";
-import type { ProcessManager } from "./lib/processes";
+import { keyToPty, type ProcessManager } from "./lib/processes";
 import { useTheme } from "./lib/theme";
 import { type UpdateState, updateChecker } from "./lib/update-checker";
 import type { ToolState } from "./types";
@@ -293,6 +293,7 @@ export function App({
 		updateChecker.getState(),
 	);
 	const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false);
+	const [inputMode, setInputMode] = useState(false);
 	const { width: terminalWidth } = useTerminalDimensions();
 
 	// Get search state for a specific tab (returns default if not set)
@@ -359,6 +360,16 @@ export function App({
 
 	// Line number display setting for LogViewer
 	const showLineNumbers = config.ui?.showLineNumbers ?? "auto";
+
+	// Whether the current tool is interactive and supports input mode
+	const isCurrentToolInteractive =
+		!!currentTool?.config.interactive && currentTool?.status === "running";
+
+	// Reset input mode when switching tabs, or when the tool stops / is not interactive
+	// biome-ignore lint/correctness/useExhaustiveDependencies: activeIndex triggers reset on tab switch even between interactive tools
+	useEffect(() => {
+		setInputMode(false);
+	}, [activeIndex, isCurrentToolInteractive]);
 
 	// Start all tools on mount (with dependency awareness if needed)
 	useEffect(() => {
@@ -715,13 +726,34 @@ export function App({
 			return;
 		}
 
-		// Command palette shortcut: Ctrl+P or Ctrl+K (works even in search mode)
+		// Command palette shortcut: Ctrl+P or Ctrl+K (works even in search mode and input mode)
 		if (key.ctrl && (key.name === "p" || key.name === "k")) {
 			// Exit search mode to avoid focus issues when palette closes
 			if (currentSearchState.searchMode && currentToolName) {
 				updateTabSearchState(currentToolName, { searchMode: false });
 			}
+			if (inputMode) {
+				setInputMode(false);
+			}
 			setCommandPaletteOpen(true);
+			return;
+		}
+
+		// Input mode: forward keystrokes to the interactive process's PTY
+		if (inputMode) {
+			if (key.name === "escape") {
+				setInputMode(false);
+				toast.info("Input mode exited");
+				return;
+			}
+
+			// Forward the key to the process PTY
+			if (toolIndex >= 0) {
+				const ptyData = keyToPty(key);
+				if (ptyData !== null) {
+					processManager.writeToProcess(toolIndex, ptyData);
+				}
+			}
 			return;
 		}
 
@@ -767,6 +799,15 @@ export function App({
 			if (currentTool && toolIndex >= 0) {
 				processManager.clearLogs(toolIndex);
 				toast.info("Logs cleared");
+			}
+			return;
+		}
+
+		// Enter input mode: i (only for interactive tools that are running)
+		if (key.name === "i") {
+			if (isCurrentToolInteractive && toolIndex >= 0) {
+				setInputMode(true);
+				toast.info("Input mode — type to send input, Esc to exit");
 			}
 			return;
 		}
@@ -987,6 +1028,7 @@ export function App({
 			showLineNumbers={showLineNumbers}
 			lineWrap={lineWrap}
 			sidebarWidth={sidebarWidth}
+			inputMode={inputMode}
 		/>
 	) : (
 		<scrollbox
@@ -1124,7 +1166,9 @@ export function App({
 		if (shortcutsOpen) return "shortcuts";
 		if (themePickerOpen) return "commandPalette"; // Use same hints as command palette
 		if (aboutModalOpen) return "commandPalette"; // Use same hints as command palette
+		if (inputMode) return "input";
 		if (currentSearchState.searchMode) return "search";
+		if (isCurrentToolInteractive) return "interactive";
 		return "normal";
 	}
 }

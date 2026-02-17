@@ -31,6 +31,8 @@ export interface ToolConfig {
 	ui?: ToolUI;
 	/** Tool names that must be ready before this tool starts */
 	dependsOn?: string[];
+	/** Spawn with a PTY so the process sees a real terminal. Enables input mode. */
+	interactive?: boolean;
 }
 
 export interface TextSegment {

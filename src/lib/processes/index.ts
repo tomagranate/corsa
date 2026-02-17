@@ -3,6 +3,9 @@ export {
 	getValidDependencies,
 	resolveDependencies,
 } from "./dependency-resolver";
+export { keyToPty } from "./key-to-pty";
+export type { OnLineCallback } from "./line-parser";
+export { LineParser } from "./line-parser";
 export type { PidFileData, PidFileEntry } from "./pid-file";
 export {
 	deletePidFile,

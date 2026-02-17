@@ -13,6 +13,7 @@ const KEYBOARD_SHORTCUTS = [
 	{ key: "r", description: "Restart process" },
 	{ key: "s", description: "Stop process" },
 	{ key: "c", description: "Clear logs" },
+	{ key: "i", description: "Enter input mode (interactive tools)" },
 	{ key: "j/k", description: "Switch tabs (vertical layout)" },
 	{ key: "h/l", description: "Switch tabs (horizontal layout)" },
 	{ key: "1-9", description: "Jump to tab by number" },

@@ -116,8 +116,8 @@ describe("ProcessManager", () => {
 		const configs: ToolConfig[] = [
 			{
 				name: "test",
-				command: "echo",
-				args: ["hello"],
+				command: "sleep",
+				args: ["10"],
 			},
 		];
 
@@ -1066,5 +1066,181 @@ command = "echo"
 
 		const tools = processManager.getTools();
 		expect(tools).toHaveLength(1);
+	});
+
+	// =========================================================================
+	// Interactive / PTY Tests
+	// =========================================================================
+
+	test("interactive tool - starts with PTY and captures output", async () => {
+		// Use printf + sleep to ensure the process lives long enough for the PTY
+		// to capture output (echo exits too fast for PTY to reliably report)
+		const configs: ToolConfig[] = [
+			{
+				name: "interactive-echo",
+				command: "bash",
+				args: ["-c", "echo 'hello from pty'; sleep 1"],
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+
+		const tool = processManager.getTool(0);
+		expect(tool?.pid).toBeDefined();
+		if (tool?.pid) {
+			expect(tool.pid).toBeGreaterThan(0);
+		}
+
+		// Wait for process to complete
+		await waitForProcessExit(processManager, 0, 5000);
+
+		// Should have captured the output through the PTY
+		const hasOutput = tool?.logs?.some((logLine) =>
+			logLine.segments.some((segment) =>
+				segment.text.includes("hello from pty"),
+			),
+		);
+		expect(hasOutput).toBe(true);
+	});
+
+	test("interactive tool - writeToProcess sends data to PTY", async () => {
+		// Use 'cat' which echoes stdin back to stdout via PTY
+		const configs: ToolConfig[] = [
+			{
+				name: "interactive-cat",
+				command: "cat",
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+		expect(processManager.getTool(0)?.status).toBe("running");
+
+		// Write data to the process
+		const written = processManager.writeToProcess(0, "hello world\n");
+		expect(written).toBe(true);
+
+		// Give the PTY time to echo back the input
+		await new Promise((resolve) => setTimeout(resolve, 500));
+
+		const tool = processManager.getTool(0);
+		// PTY should have echoed the input back, so it appears in logs
+		const hasEcho = tool?.logs?.some((logLine) =>
+			logLine.segments.some((segment) => segment.text.includes("hello world")),
+		);
+		expect(hasEcho).toBe(true);
+	});
+
+	test("interactive tool - writeToProcess returns false for non-interactive tool", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "non-interactive",
+				command: "sleep",
+				args: ["10"],
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+		expect(processManager.getTool(0)?.status).toBe("running");
+
+		// Should return false because tool has no PTY terminal
+		const result = processManager.writeToProcess(0, "test");
+		expect(result).toBe(false);
+	});
+
+	test("interactive tool - writeToProcess returns false for invalid index", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "test",
+				command: "echo",
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+
+		// Tool not started yet
+		const result = processManager.writeToProcess(0, "test");
+		expect(result).toBe(false);
+
+		// Invalid index
+		const result2 = processManager.writeToProcess(999, "test");
+		expect(result2).toBe(false);
+	});
+
+	test("interactive tool - stopTool stops PTY process", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "interactive-sleep",
+				command: "sleep",
+				args: ["60"],
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+		expect(processManager.getTool(0)?.status).toBe("running");
+
+		await processManager.stopTool(0);
+		const tool = processManager.getTool(0);
+		expect(tool?.status).toBe("stopped");
+	});
+
+	test("interactive tool - restartTool restarts PTY process", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "interactive-restart",
+				command: "sleep",
+				args: ["60"],
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+		await processManager.startTool(0);
+
+		const firstPid = processManager.getTool(0)?.pid;
+		expect(firstPid).toBeDefined();
+
+		await processManager.restartTool(0);
+
+		const tool = processManager.getTool(0);
+		expect(tool?.status).toBe("running");
+		expect(tool?.pid).toBeDefined();
+		expect(tool?.pid).not.toBe(firstPid);
+	});
+
+	test("non-interactive tool - config.interactive defaults to undefined", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "normal-tool",
+				command: "echo",
+				args: ["hello"],
+			},
+		];
+
+		await processManager.initialize(configs);
+		const tool = processManager.getTool(0);
+		expect(tool?.config.interactive).toBeUndefined();
+	});
+
+	test("interactive tool - config.interactive is true", async () => {
+		const configs: ToolConfig[] = [
+			{
+				name: "pty-tool",
+				command: "echo",
+				args: ["hello"],
+				interactive: true,
+			},
+		];
+
+		await processManager.initialize(configs);
+		const tool = processManager.getTool(0);
+		expect(tool?.config.interactive).toBe(true);
 	});
 });
