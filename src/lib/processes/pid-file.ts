@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -16,6 +17,37 @@ export interface PidFileData {
 	version: number;
 	processes: PidFileEntry[];
 }
+
+/**
+ * Simple async mutex to serialize PID file read-modify-write operations.
+ * Without this, concurrent startTool calls race on the file and overwrite
+ * each other's entries, causing PIDs to be silently lost.
+ */
+class PidFileMutex {
+	private queue: (() => void)[] = [];
+	private locked = false;
+
+	async acquire(): Promise<void> {
+		if (!this.locked) {
+			this.locked = true;
+			return;
+		}
+		return new Promise<void>((resolve) => {
+			this.queue.push(resolve);
+		});
+	}
+
+	release(): void {
+		const next = this.queue.shift();
+		if (next) {
+			next();
+		} else {
+			this.locked = false;
+		}
+	}
+}
+
+const pidFileMutex = new PidFileMutex();
 
 /**
  * Generate a short hash from a string for use in filenames.
@@ -121,17 +153,15 @@ export async function savePidFile(
 export async function deletePidFile(configPath?: string): Promise<void> {
 	const filePath = getPidFilePath(configPath);
 	try {
-		const file = Bun.file(filePath);
-		if (await file.exists()) {
-			await Bun.write(filePath, "");
-		}
+		await unlink(filePath);
 	} catch {
-		// Ignore errors when deleting
+		// Ignore errors (file may not exist)
 	}
 }
 
 /**
  * Update PID file by adding or updating a process entry.
+ * Serialized with a mutex to prevent concurrent writes from losing entries.
  *
  * @param entry - The process entry to add or update
  * @param configPath - Optional config path for instance-specific PID file
@@ -140,24 +170,30 @@ export async function updatePidFile(
 	entry: PidFileEntry,
 	configPath?: string,
 ): Promise<void> {
-	const data = (await loadPidFile(configPath)) || {
-		version: 1,
-		processes: [],
-	};
+	await pidFileMutex.acquire();
+	try {
+		const data = (await loadPidFile(configPath)) || {
+			version: 1,
+			processes: [],
+		};
 
-	// Remove existing entry for this toolIndex if it exists
-	data.processes = data.processes.filter(
-		(p) => p.toolIndex !== entry.toolIndex,
-	);
+		// Remove existing entry for this toolIndex if it exists
+		data.processes = data.processes.filter(
+			(p) => p.toolIndex !== entry.toolIndex,
+		);
 
-	// Add new entry
-	data.processes.push(entry);
+		// Add new entry
+		data.processes.push(entry);
 
-	await savePidFile(data, configPath);
+		await savePidFile(data, configPath);
+	} finally {
+		pidFileMutex.release();
+	}
 }
 
 /**
  * Remove a process entry from the PID file by toolIndex.
+ * Serialized with a mutex to prevent concurrent writes from losing entries.
  *
  * @param toolIndex - The tool index to remove
  * @param configPath - Optional config path for instance-specific PID file
@@ -166,14 +202,19 @@ export async function removePidFromFile(
 	toolIndex: number,
 	configPath?: string,
 ): Promise<void> {
-	const data = await loadPidFile(configPath);
-	if (!data) return;
+	await pidFileMutex.acquire();
+	try {
+		const data = await loadPidFile(configPath);
+		if (!data) return;
 
-	data.processes = data.processes.filter((p) => p.toolIndex !== toolIndex);
+		data.processes = data.processes.filter((p) => p.toolIndex !== toolIndex);
 
-	if (data.processes.length === 0) {
-		await deletePidFile(configPath);
-	} else {
-		await savePidFile(data, configPath);
+		if (data.processes.length === 0) {
+			await deletePidFile(configPath);
+		} else {
+			await savePidFile(data, configPath);
+		}
+	} finally {
+		pidFileMutex.release();
 	}
 }

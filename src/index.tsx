@@ -310,6 +310,13 @@ async function main() {
 		// Connect cleanup function to the early signal handlers
 		cleanupFn = cleanup;
 
+		// Last-resort fallback: if the process exits without graceful cleanup
+		// (e.g. uncaught exception, SIGQUIT), synchronously kill all children
+		// so they don't become orphans
+		process.on("exit", () => {
+			processManager.killAllSync();
+		});
+
 		// Start rendering
 		await renderer.start();
 

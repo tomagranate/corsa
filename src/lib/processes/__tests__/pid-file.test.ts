@@ -390,4 +390,84 @@ describe("PID file utilities", () => {
 			expect(globalLoaded).toBeNull();
 		});
 	});
+
+	describe("concurrent write safety", () => {
+		test("concurrent updatePidFile calls preserve all entries", async () => {
+			const entries: PidFileEntry[] = Array.from({ length: 10 }, (_, i) => ({
+				toolIndex: i,
+				toolName: `tool-${i}`,
+				pid: 1000 + i,
+				startTime: Date.now(),
+				command: "echo",
+				args: [],
+				cwd: "/tmp",
+			}));
+
+			await Promise.all(entries.map((entry) => updatePidFile(entry)));
+
+			const loaded = await loadPidFile();
+			expect(loaded?.processes).toHaveLength(10);
+			for (let i = 0; i < 10; i++) {
+				const found = loaded?.processes.find((p) => p.toolIndex === i);
+				expect(found).toBeDefined();
+				expect(found?.pid).toBe(1000 + i);
+			}
+		});
+
+		test("concurrent updatePidFile and removePidFromFile are consistent", async () => {
+			// Seed with entries 0-4
+			for (let i = 0; i < 5; i++) {
+				await updatePidFile({
+					toolIndex: i,
+					toolName: `tool-${i}`,
+					pid: 2000 + i,
+					startTime: Date.now(),
+					command: "echo",
+					args: [],
+					cwd: "/tmp",
+				});
+			}
+
+			// Concurrently remove 0-2 and add 5-7
+			await Promise.all([
+				removePidFromFile(0),
+				removePidFromFile(1),
+				removePidFromFile(2),
+				updatePidFile({
+					toolIndex: 5,
+					toolName: "tool-5",
+					pid: 2005,
+					startTime: Date.now(),
+					command: "echo",
+					args: [],
+					cwd: "/tmp",
+				}),
+				updatePidFile({
+					toolIndex: 6,
+					toolName: "tool-6",
+					pid: 2006,
+					startTime: Date.now(),
+					command: "echo",
+					args: [],
+					cwd: "/tmp",
+				}),
+				updatePidFile({
+					toolIndex: 7,
+					toolName: "tool-7",
+					pid: 2007,
+					startTime: Date.now(),
+					command: "echo",
+					args: [],
+					cwd: "/tmp",
+				}),
+			]);
+
+			const loaded = await loadPidFile();
+			expect(loaded).not.toBeNull();
+
+			// Entries 0-2 removed, 3-7 should remain
+			const indices = loaded?.processes.map((p) => p.toolIndex).sort();
+			expect(indices).toEqual([3, 4, 5, 6, 7]);
+		});
+	});
 });

@@ -1,5 +1,3 @@
-// Use process.platform for cross-platform detection
-
 /**
  * Check if a process with the given PID is still running.
  * Cross-platform implementation.
@@ -9,7 +7,6 @@ export async function isProcessRunning(pid: number): Promise<boolean> {
 
 	try {
 		if (process.platform === "win32") {
-			// Windows: Use tasklist to check if process exists
 			const proc = Bun.spawn(
 				["tasklist", "/FI", `PID eq ${pid}`, "/FO", "CSV"],
 				{
@@ -18,30 +15,28 @@ export async function isProcessRunning(pid: number): Promise<boolean> {
 				},
 			);
 			const output = await new Response(proc.stdout).text();
-			// tasklist returns header line + data line if process exists
-			// If only header, process doesn't exist
 			const lines = output.trim().split("\n");
 			return lines.length > 1;
 		} else {
-			// Unix: Use kill(pid, 0) - signal 0 doesn't kill, just checks if process exists
-			// This is the standard Unix way to check if a process is running
+			// kill -0 checks existence without sending a real signal
 			const proc = Bun.spawn(["kill", "-0", pid.toString()], {
 				stdout: "pipe",
 				stderr: "pipe",
 			});
 			await proc.exited;
-			// Exit code 0 means process exists, non-zero means it doesn't
 			return proc.exitCode === 0;
 		}
 	} catch {
-		// If command fails, assume process is not running
 		return false;
 	}
 }
 
 /**
  * Kill a process by PID.
- * Sends SIGTERM first for graceful shutdown, then SIGKILL if needed.
+ * On Unix, attempts to kill the entire process group first (negative PID),
+ * which catches child processes spawned by the target. Falls back to killing
+ * the individual PID if the process group kill fails (e.g. the process is
+ * not a process group leader).
  */
 export async function killProcess(
 	pid: number,
@@ -51,20 +46,28 @@ export async function killProcess(
 
 	try {
 		if (process.platform === "win32") {
-			// Windows: Use taskkill
-			const signalFlag = signal === "SIGKILL" ? "/F" : "";
-			const proc = Bun.spawn(
-				["taskkill", "/PID", pid.toString(), signalFlag].filter(Boolean),
-				{
-					stdout: "pipe",
-					stderr: "pipe",
-				},
-			);
+			// /T flag kills the process tree (parent + children)
+			const args = ["taskkill", "/PID", pid.toString(), "/T"];
+			if (signal === "SIGKILL") args.push("/F");
+			const proc = Bun.spawn(args, {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
 			await proc.exited;
 			return proc.exitCode === 0;
 		} else {
-			// Unix: Use kill command
 			const signalFlag = signal === "SIGKILL" ? "-9" : "-15";
+
+			// Try process group kill first (negative PID signals all processes
+			// in the group, catching child processes that would otherwise be orphaned)
+			const pgProc = Bun.spawn(["kill", signalFlag, `-${pid}`], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await pgProc.exited;
+			if (pgProc.exitCode === 0) return true;
+
+			// Fall back to individual PID kill
 			const proc = Bun.spawn(["kill", signalFlag, pid.toString()], {
 				stdout: "pipe",
 				stderr: "pipe",
@@ -85,28 +88,24 @@ export async function killProcessGracefully(
 	pid: number,
 	timeoutMs: number = 3000,
 ): Promise<boolean> {
-	// First check if process is running
 	const isRunning = await isProcessRunning(pid);
 	if (!isRunning) {
-		return true; // Already dead
+		return true;
 	}
 
-	// Try graceful shutdown
 	const killed = await killProcess(pid, "SIGTERM");
 	if (!killed) {
-		return false; // Failed to send signal
+		return false;
 	}
 
-	// Wait for process to exit
 	const startTime = Date.now();
 	while (Date.now() - startTime < timeoutMs) {
 		const stillRunning = await isProcessRunning(pid);
 		if (!stillRunning) {
-			return true; // Process exited gracefully
+			return true;
 		}
-		await new Promise((resolve) => setTimeout(resolve, 100)); // Check every 100ms
+		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 
-	// Process didn't exit, force kill
 	return await killProcess(pid, "SIGKILL");
 }
