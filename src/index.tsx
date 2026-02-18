@@ -21,6 +21,35 @@ import {
 /** Duration for config warning toast (10 seconds) */
 const CONFIG_WARNING_TOAST_DURATION = 10000;
 
+/**
+ * Fully resets terminal state by writing escape sequences directly to stdout.
+ * This handles everything the renderer's native cleanup would do: disabling
+ * mouse tracking, leaving alternate screen, restoring cursor, and disabling
+ * raw mode. Safe to call multiple times or when the renderer is unavailable.
+ */
+function resetTerminal(): void {
+	try {
+		if (process.stdin.isTTY) {
+			process.stdin.setRawMode(false);
+		}
+	} catch {
+		// stdin may already be destroyed
+	}
+	try {
+		process.stdout.write(
+			"\x1b[?1000l" + // Disable normal mouse tracking
+				"\x1b[?1002l" + // Disable button-event mouse tracking
+				"\x1b[?1003l" + // Disable all-motion mouse tracking
+				"\x1b[?1006l" + // Disable SGR extended mouse mode
+				"\x1b[?1049l" + // Leave alternate screen buffer
+				"\x1b[?25h" + // Show cursor
+				"\x1b[0m", // Reset all text attributes
+		);
+	} catch {
+		// stdout may already be destroyed
+	}
+}
+
 async function main() {
 	// Parse CLI arguments
 	const args = parseArgs();
@@ -66,6 +95,7 @@ async function main() {
 			await cleanupFn();
 		} else {
 			// Second Ctrl-C or no cleanup function: force quit
+			resetTerminal();
 			process.exit(1);
 		}
 	});
@@ -80,37 +110,27 @@ async function main() {
 	});
 
 	// Handle SIGQUIT (Ctrl-\) as emergency exit
-	// This works even in raw mode when Ctrl-C doesn't, because SIGQUIT
-	// is typically not disabled. Use this as escape hatch in error states.
+	// This bypasses graceful shutdown entirely for when the app is stuck.
 	process.on("SIGQUIT", () => {
-		// Restore terminal immediately
-		if (process.stdin.isTTY) {
-			process.stdin.setRawMode(false);
-		}
+		resetTerminal();
 		console.error("\n\nSIGQUIT received - forcing exit");
 		process.exit(1);
 	});
 
-	// Handle uncaught exceptions - restore terminal and exit
-	// This ensures Ctrl-C works even if rendering crashes, because the terminal
-	// is restored to normal mode where Ctrl-C generates SIGINT again
+	// Handle uncaught exceptions - fully restore terminal and exit immediately.
+	// Without process.exit() the process would stay alive in a broken state.
 	process.on("uncaughtException", (err) => {
-		// Restore terminal to normal mode so Ctrl-C works
-		if (process.stdin.isTTY) {
-			process.stdin.setRawMode(false);
-		}
+		resetTerminal();
 		console.error("\n\nFatal error:", err.message);
 		console.error(err.stack);
-		console.error("\nPress Ctrl-C to exit.");
+		process.exit(1);
 	});
 
 	// Same for unhandled promise rejections
 	process.on("unhandledRejection", (reason) => {
-		if (process.stdin.isTTY) {
-			process.stdin.setRawMode(false);
-		}
+		resetTerminal();
 		console.error("\n\nUnhandled rejection:", reason);
-		console.error("\nPress Ctrl-C to exit.");
+		process.exit(1);
 	});
 
 	// Store config warnings to show after rendering starts
@@ -302,7 +322,7 @@ async function main() {
 				renderer.stop();
 				renderer.destroy();
 			} catch {
-				// Ignore cleanup errors, but ensure we exit
+				resetTerminal();
 			}
 			process.exit(0);
 		};
@@ -310,10 +330,11 @@ async function main() {
 		// Connect cleanup function to the early signal handlers
 		cleanupFn = cleanup;
 
-		// Last-resort fallback: if the process exits without graceful cleanup
-		// (e.g. uncaught exception, SIGQUIT), synchronously kill all children
-		// so they don't become orphans
+		// Last-resort fallback: runs synchronously on any exit path.
+		// Ensures terminal state is always restored and child processes are killed
+		// even if graceful cleanup was skipped (crash, SIGQUIT, etc.).
 		process.on("exit", () => {
+			resetTerminal();
 			processManager.killAllSync();
 		});
 
