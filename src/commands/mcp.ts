@@ -46,11 +46,17 @@ async function apiRequest<T>(
 	baseUrl: string,
 	path: string,
 	method: "GET" | "POST" = "GET",
+	body?: unknown,
 ): Promise<T> {
 	const url = `${baseUrl}${path}`;
 
 	try {
-		const response = await fetch(url, { method });
+		const init: RequestInit = { method };
+		if (body !== undefined) {
+			init.headers = { "Content-Type": "application/json" };
+			init.body = JSON.stringify(body);
+		}
+		const response = await fetch(url, init);
 		const json = (await response.json()) as ApiResponse<T>;
 
 		if (!json.ok) {
@@ -267,6 +273,44 @@ export async function runMcp(configPath?: string): Promise<void> {
 				apiUrl,
 				`/api/processes/${encodeURIComponent(name)}/clear`,
 				"POST",
+			);
+
+			return {
+				content: [{ type: "text", text: result.message }],
+			};
+		},
+	);
+
+	// send_keys - Send keypresses to an interactive process
+	server.tool(
+		"send_keys",
+		"Send virtual keypresses to an interactive process's terminal (PTY). " +
+			"Use this to interact with CLI prompts, respond to confirmation dialogs, navigate menus, or type commands. " +
+			"Only works for processes configured with interactive = true. " +
+			"Each element in the keys array is either a special key name or literal text to type.\n\n" +
+			"Special key names: return, backspace, tab, up, down, left, right, " +
+			"home, end, delete, pageup, pagedown, insert, escape, f1-f12.\n" +
+			"Ctrl combinations: ctrl+c, ctrl+d, ctrl+z, ctrl+l, etc.\n" +
+			"Literal text is sent as-is, e.g. 'npm test' types those characters.",
+		{
+			name: z
+				.string()
+				.describe("Name of the interactive process to send keys to"),
+			keys: z
+				.array(z.string())
+				.describe(
+					"Array of key names or literal text to send. " +
+						'Examples: ["y", "return"] to type y and press enter, ' +
+						'["npm test", "return"] to type a command and run it, ' +
+						'["ctrl+c"] to send an interrupt signal',
+				),
+		},
+		async ({ name, keys }) => {
+			const result = await apiRequest<{ message: string; sent: number }>(
+				apiUrl,
+				`/api/processes/${encodeURIComponent(name)}/input`,
+				"POST",
+				{ keys },
 			);
 
 			return {

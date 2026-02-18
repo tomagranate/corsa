@@ -64,6 +64,12 @@ beforeAll(async () => {
 			command: "echo",
 			args: ["no desc"],
 		},
+		{
+			name: "interactive-cat",
+			command: "cat",
+			interactive: true,
+			description: "An interactive cat process for testing PTY input",
+		},
 	];
 	await processManager.initialize(configs);
 
@@ -503,6 +509,208 @@ describe("ApiServer", () => {
 
 			expect(response.status).toBe(404);
 			expect(json.ok).toBe(false);
+		});
+	});
+
+	// ==========================================================================
+	// Send Input (keypresses)
+	// ==========================================================================
+	describe("POST /api/processes/:name/input", () => {
+		test("sends keys to an interactive process", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+
+			await processManager.startTool(result.index);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+
+			expect(processManager.getTool(result.index)?.status).toBe("running");
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: ["hello"] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(200);
+			expect(json.ok).toBe(true);
+			const data = json.data as { message: string; sent: number };
+			expect(data.sent).toBe(1);
+			expect(data.message).toContain("1 key(s)");
+		});
+
+		test("sends multiple keys in one request", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+
+			if (processManager.getTool(result.index)?.status !== "running") {
+				await processManager.startTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: ["y", "return"] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(200);
+			expect(json.ok).toBe(true);
+			const data = json.data as { message: string; sent: number };
+			expect(data.sent).toBe(2);
+		});
+
+		test("sends ctrl combinations", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+
+			if (processManager.getTool(result.index)?.status !== "running") {
+				await processManager.startTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: ["ctrl+l"] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(200);
+			expect(json.ok).toBe(true);
+			const data = json.data as { message: string; sent: number };
+			expect(data.sent).toBe(1);
+		});
+
+		test("returns 400 for non-interactive process", async () => {
+			const response = await fetch(
+				apiUrl("/api/processes/test-process/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: ["hello"] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(400);
+			expect(json.ok).toBe(false);
+			expect(json.error).toContain("not interactive");
+		});
+
+		test("returns 404 for unknown process", async () => {
+			const response = await fetch(apiUrl("/api/processes/nonexistent/input"), {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ keys: ["hello"] }),
+			});
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(404);
+			expect(json.ok).toBe(false);
+		});
+
+		test("returns 400 for missing keys array", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+			if (processManager.getTool(result.index)?.status !== "running") {
+				await processManager.startTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(400);
+			expect(json.ok).toBe(false);
+			expect(json.error).toContain("keys");
+		});
+
+		test("returns 400 for empty keys array", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+			if (processManager.getTool(result.index)?.status !== "running") {
+				await processManager.startTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: [] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(400);
+			expect(json.ok).toBe(false);
+			expect(json.error).toContain("keys");
+		});
+
+		test("returns 400 for invalid JSON body", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+			if (processManager.getTool(result.index)?.status !== "running") {
+				await processManager.startTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: "not json",
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(400);
+			expect(json.ok).toBe(false);
+			expect(json.error).toContain("Invalid JSON");
+		});
+
+		test("returns 400 for non-running interactive process", async () => {
+			const result = processManager.getToolByName("interactive-cat");
+			if (!result) throw new Error("Expected interactive-cat to exist");
+
+			if (processManager.getTool(result.index)?.status === "running") {
+				await processManager.stopTool(result.index);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+
+			const response = await fetch(
+				apiUrl("/api/processes/interactive-cat/input"),
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ keys: ["hello"] }),
+				},
+			);
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(400);
+			expect(json.ok).toBe(false);
+			expect(json.error).toContain("not running");
 		});
 	});
 

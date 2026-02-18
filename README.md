@@ -215,6 +215,7 @@ Add to your MCP configuration (e.g., `~/.cursor/mcp.json`):
 | `stop_process` | Stop a running process |
 | `restart_process` | Restart a process |
 | `clear_logs` | Clear logs for a process |
+| `send_keys` | Send virtual keypresses to an interactive process |
 | `reload_config` | Reload config file and restart all processes |
 
 ## Contributing

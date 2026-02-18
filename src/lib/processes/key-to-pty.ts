@@ -85,3 +85,40 @@ export function keyToPty(key: KeyLike): string | null {
 	// Unknown key - don't forward
 	return null;
 }
+
+/** All recognized special key names (for documentation / validation) */
+export const SPECIAL_KEY_NAMES = Object.keys(SPECIAL_KEY_MAP);
+
+/**
+ * Convert a string key descriptor to the byte sequence to write to a PTY.
+ *
+ * Accepts:
+ *  - Special key names: "return", "tab", "up", "f1", etc.
+ *  - Ctrl combinations: "ctrl+c", "ctrl+d", etc.
+ *  - Single characters: "a", "1", etc.
+ *  - Literal text: "hello world" (sent as-is)
+ *
+ * @returns The string to write, or null for unrecognized special key names
+ */
+export function keyNameToPty(keyName: string): string | null {
+	// ctrl+<letter> pattern
+	const ctrlMatch = keyName.match(/^ctrl\+([a-z])$/i);
+	const ctrlLetter = ctrlMatch?.[1];
+	if (ctrlLetter) {
+		const code = ctrlLetter.toLowerCase().charCodeAt(0);
+		return String.fromCharCode(code - 96);
+	}
+
+	// Special key names
+	const special = SPECIAL_KEY_MAP[keyName.toLowerCase()];
+	if (special !== undefined) {
+		return special;
+	}
+
+	// Single character or literal text — send as-is
+	if (keyName.length >= 1) {
+		return keyName;
+	}
+
+	return null;
+}

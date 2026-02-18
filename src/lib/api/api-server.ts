@@ -2,6 +2,7 @@ import type { Server } from "bun";
 import type { HealthStatus } from "../../types";
 import type { Config } from "../config";
 import type { ProcessManager } from "../processes";
+import { keyNameToPty } from "../processes/key-to-pty";
 import { fuzzyFindLines, substringFindLines } from "../search";
 
 /** Default port for the MCP API server */
@@ -111,6 +112,7 @@ export class ApiServer {
 		this.log("  POST /api/processes/:name/stop");
 		this.log("  POST /api/processes/:name/restart");
 		this.log("  POST /api/processes/:name/clear");
+		this.log("  POST /api/processes/:name/input");
 		this.log("  POST /api/reload");
 	}
 
@@ -203,6 +205,11 @@ export class ApiServer {
 				// Clear logs
 				if (subPath === "/clear" && method === "POST") {
 					return this.handleClearLogs(name);
+				}
+
+				// Send input to interactive process
+				if (subPath === "/input" && method === "POST") {
+					return await this.handleSendInput(name, req);
 				}
 			}
 
@@ -414,6 +421,74 @@ export class ApiServer {
 		return this.jsonResponse({
 			ok: true,
 			data: { message: `Cleared logs: ${name}` },
+		});
+	}
+
+	/**
+	 * Send input (keypresses) to an interactive process's PTY.
+	 */
+	private async handleSendInput(name: string, req: Request): Promise<Response> {
+		const result = this.processManager.getToolByName(name);
+		if (!result) {
+			return this.jsonResponse(
+				{ ok: false, error: `Process not found: ${name}` },
+				404,
+			);
+		}
+
+		const { index, tool } = result;
+
+		if (!tool.config.interactive) {
+			return this.jsonResponse(
+				{
+					ok: false,
+					error: `Process is not interactive: ${name}. Set interactive = true in the tool config to enable PTY input.`,
+				},
+				400,
+			);
+		}
+
+		if (tool.status !== "running") {
+			return this.jsonResponse(
+				{ ok: false, error: `Process is not running: ${name}` },
+				400,
+			);
+		}
+
+		let body: { keys?: unknown };
+		try {
+			body = (await req.json()) as { keys?: unknown };
+		} catch {
+			return this.jsonResponse({ ok: false, error: "Invalid JSON body" }, 400);
+		}
+
+		if (!Array.isArray(body.keys) || body.keys.length === 0) {
+			return this.jsonResponse(
+				{
+					ok: false,
+					error:
+						'Missing or empty "keys" array. Provide an array of key names or text strings.',
+				},
+				400,
+			);
+		}
+
+		const keys = body.keys as string[];
+		let sent = 0;
+		for (const key of keys) {
+			if (typeof key !== "string") continue;
+			const ptyData = keyNameToPty(key);
+			if (ptyData !== null) {
+				const written = this.processManager.writeToProcess(index, ptyData);
+				if (written) sent++;
+			}
+		}
+
+		this.log(`Sent ${sent} key(s) to: ${name}`);
+
+		return this.jsonResponse({
+			ok: true,
+			data: { message: `Sent ${sent} key(s) to ${name}`, sent },
 		});
 	}
 
