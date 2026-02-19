@@ -1,130 +1,74 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
 	getPreferencesPath,
 	loadPreferences,
 	savePreferences,
+	setPreferencesPathForTesting,
 	updatePreference,
 } from "../preferences";
 
 /**
- * Runs a test with an isolated temp directory and preferences file path.
- * The temp directory is cleaned up after the callback completes.
+ * Runs a test with an isolated temp directory.
+ * Sets the module-level path override so all preferences functions
+ * use the temp file, then cleans up afterwards.
  */
 function withTempPrefs(fn: (prefsPath: string) => void) {
 	const dir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
 	const filePath = path.join(dir, "preferences.json");
+	setPreferencesPathForTesting(filePath);
 	try {
 		fn(filePath);
 	} finally {
+		setPreferencesPathForTesting(undefined);
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 
-describe("diagnostic", () => {
-	test("step-by-step: write, verify, read, loadPreferences", () => {
-		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
-		const fp = path.join(dir, "test.json");
-		const data = '{"theme":"diag-test"}';
-
-		// Step 1: write
-		fs.writeFileSync(fp, data, "utf-8");
-
-		// Step 2: file exists?
-		expect(fs.existsSync(fp)).toBe(true);
-
-		// Step 3: read back from test's fs
-		const raw = fs.readFileSync(fp, "utf-8");
-		expect(raw).toBe(data);
-
-		// Step 4: read through loadPreferences
-		const prefs = loadPreferences(fp);
-		expect(prefs.theme).toBe("diag-test");
-
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	test("step-by-step: savePreferences then loadPreferences", () => {
-		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
-		const fp = path.join(dir, "test.json");
-
-		savePreferences({ theme: "diag-save" }, fp);
-
-		// Verify via raw read
-		const raw = fs.readFileSync(fp, "utf-8");
-		const parsed = JSON.parse(raw);
-		expect(parsed.theme).toBe("diag-save");
-
-		// Verify via loadPreferences
-		const prefs = loadPreferences(fp);
-		expect(prefs.theme).toBe("diag-save");
-
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-
-	test("step-by-step: updatePreference round-trip", () => {
-		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
-		const fp = path.join(dir, "test.json");
-
-		savePreferences({ theme: "before" }, fp);
-
-		// Verify save worked
-		const rawBefore = fs.readFileSync(fp, "utf-8");
-		expect(JSON.parse(rawBefore).theme).toBe("before");
-
-		updatePreference("theme", "after", fp);
-
-		// Verify update worked via raw read
-		const rawAfter = fs.readFileSync(fp, "utf-8");
-		expect(JSON.parse(rawAfter).theme).toBe("after");
-
-		// Verify via loadPreferences
-		const prefs = loadPreferences(fp);
-		expect(prefs.theme).toBe("after");
-
-		fs.rmSync(dir, { recursive: true, force: true });
-	});
-});
-
 describe("getPreferencesPath", () => {
-	let originalXdg: string | undefined;
-	let tempDir: string;
-
-	beforeEach(() => {
-		tempDir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
-		originalXdg = process.env.XDG_CONFIG_HOME;
-		process.env.XDG_CONFIG_HOME = tempDir;
-	});
-
-	afterEach(() => {
-		if (originalXdg !== undefined) {
-			process.env.XDG_CONFIG_HOME = originalXdg;
-		} else {
-			delete process.env.XDG_CONFIG_HOME;
-		}
-		fs.rmSync(tempDir, { recursive: true, force: true });
-	});
-
 	test("uses XDG_CONFIG_HOME when set", () => {
-		const p = getPreferencesPath();
-		expect(p).toBe(path.join(tempDir, "corsa", "preferences.json"));
+		const originalXdg = process.env.XDG_CONFIG_HOME;
+		const tempDir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
+		setPreferencesPathForTesting(undefined);
+		try {
+			process.env.XDG_CONFIG_HOME = tempDir;
+			const p = getPreferencesPath();
+			expect(p).toBe(path.join(tempDir, "corsa", "preferences.json"));
+		} finally {
+			if (originalXdg !== undefined) {
+				process.env.XDG_CONFIG_HOME = originalXdg;
+			} else {
+				delete process.env.XDG_CONFIG_HOME;
+			}
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	test("falls back to ~/.config when XDG_CONFIG_HOME is not set", () => {
-		delete process.env.XDG_CONFIG_HOME;
-		const os = require("node:os");
-		const p = getPreferencesPath();
-		expect(p).toBe(
-			path.join(os.homedir(), ".config", "corsa", "preferences.json"),
-		);
+		const originalXdg = process.env.XDG_CONFIG_HOME;
+		setPreferencesPathForTesting(undefined);
+		try {
+			delete process.env.XDG_CONFIG_HOME;
+			const os = require("node:os");
+			const p = getPreferencesPath();
+			expect(p).toBe(
+				path.join(os.homedir(), ".config", "corsa", "preferences.json"),
+			);
+		} finally {
+			if (originalXdg !== undefined) {
+				process.env.XDG_CONFIG_HOME = originalXdg;
+			} else {
+				delete process.env.XDG_CONFIG_HOME;
+			}
+		}
 	});
 });
 
 describe("loadPreferences", () => {
 	test("returns empty defaults when file does not exist", () => {
-		withTempPrefs((prefsPath) => {
-			const prefs = loadPreferences(prefsPath);
+		withTempPrefs(() => {
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -141,7 +85,7 @@ describe("loadPreferences", () => {
 				}),
 			);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("synthwave");
 			expect(prefs.lineWrap).toBe(false);
 			expect(prefs.latestKnownVersion).toBe("1.2.3");
@@ -153,7 +97,7 @@ describe("loadPreferences", () => {
 		withTempPrefs((prefsPath) => {
 			fs.writeFileSync(prefsPath, "not json {{{");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -162,7 +106,7 @@ describe("loadPreferences", () => {
 		withTempPrefs((prefsPath) => {
 			fs.writeFileSync(prefsPath, "[1, 2, 3]");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -171,7 +115,7 @@ describe("loadPreferences", () => {
 		withTempPrefs((prefsPath) => {
 			fs.writeFileSync(prefsPath, "null");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -180,7 +124,7 @@ describe("loadPreferences", () => {
 		withTempPrefs((prefsPath) => {
 			fs.writeFileSync(prefsPath, '"just a string"');
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -196,7 +140,7 @@ describe("loadPreferences", () => {
 				}),
 			);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("default");
 			expect((prefs as Record<string, unknown>).unknownField).toBeUndefined();
 			expect((prefs as Record<string, unknown>).anotherUnknown).toBeUndefined();
@@ -215,7 +159,7 @@ describe("loadPreferences", () => {
 				}),
 			);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBeUndefined();
 			expect(prefs.lineWrap).toBeUndefined();
 			expect(prefs.latestKnownVersion).toBeUndefined();
@@ -234,7 +178,7 @@ describe("loadPreferences", () => {
 				}),
 			);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("dark");
 			expect(prefs.lineWrap).toBeUndefined();
 			expect(prefs.latestKnownVersion).toBe("2.0.0");
@@ -245,7 +189,7 @@ describe("loadPreferences", () => {
 		withTempPrefs((prefsPath) => {
 			fs.writeFileSync(prefsPath, "");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
@@ -255,23 +199,25 @@ describe("savePreferences", () => {
 	test("creates directory and file when they do not exist", () => {
 		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
 		const nestedPath = path.join(dir, "nested", "sub", "preferences.json");
+		setPreferencesPathForTesting(nestedPath);
 		try {
 			expect(fs.existsSync(nestedPath)).toBe(false);
 
-			savePreferences({ theme: "ocean" }, nestedPath);
+			savePreferences({ theme: "ocean" });
 
 			expect(fs.existsSync(nestedPath)).toBe(true);
 			const content = fs.readFileSync(nestedPath, "utf-8");
 			const parsed = JSON.parse(content);
 			expect(parsed.theme).toBe("ocean");
 		} finally {
+			setPreferencesPathForTesting(undefined);
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
 	test("writes pretty-printed JSON", () => {
 		withTempPrefs((prefsPath) => {
-			savePreferences({ theme: "dark", lineWrap: true }, prefsPath);
+			savePreferences({ theme: "dark", lineWrap: true });
 
 			const content = fs.readFileSync(prefsPath, "utf-8");
 			expect(content).toBe(
@@ -281,36 +227,36 @@ describe("savePreferences", () => {
 	});
 
 	test("overwrites existing preferences", () => {
-		withTempPrefs((prefsPath) => {
-			savePreferences({ theme: "light" }, prefsPath);
-			savePreferences({ theme: "dark", lineWrap: false }, prefsPath);
+		withTempPrefs(() => {
+			savePreferences({ theme: "light" });
+			savePreferences({ theme: "dark", lineWrap: false });
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("dark");
 			expect(prefs.lineWrap).toBe(false);
 		});
 	});
 
 	test("can save empty preferences", () => {
-		withTempPrefs((prefsPath) => {
-			savePreferences({}, prefsPath);
+		withTempPrefs(() => {
+			savePreferences({});
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs).toEqual({});
 		});
 	});
 
 	test("round-trips all preference fields", () => {
-		withTempPrefs((prefsPath) => {
+		withTempPrefs(() => {
 			const original = {
 				theme: "synthwave",
 				lineWrap: false,
 				latestKnownVersion: "3.1.4",
 				lastUpdateCheck: 1700000000000,
 			};
-			savePreferences(original, prefsPath);
+			savePreferences(original);
 
-			const loaded = loadPreferences(prefsPath);
+			const loaded = loadPreferences();
 			expect(loaded).toEqual(original);
 		});
 	});
@@ -318,28 +264,25 @@ describe("savePreferences", () => {
 
 describe("updatePreference", () => {
 	test("sets a single preference on empty file", () => {
-		withTempPrefs((prefsPath) => {
-			updatePreference("theme", "midnight", prefsPath);
+		withTempPrefs(() => {
+			updatePreference("theme", "midnight");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("midnight");
 		});
 	});
 
 	test("preserves existing preferences when updating one", () => {
-		withTempPrefs((prefsPath) => {
-			savePreferences(
-				{
-					theme: "default",
-					lineWrap: true,
-					latestKnownVersion: "1.0.0",
-				},
-				prefsPath,
-			);
+		withTempPrefs(() => {
+			savePreferences({
+				theme: "default",
+				lineWrap: true,
+				latestKnownVersion: "1.0.0",
+			});
 
-			updatePreference("lineWrap", false, prefsPath);
+			updatePreference("lineWrap", false);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("default");
 			expect(prefs.lineWrap).toBe(false);
 			expect(prefs.latestKnownVersion).toBe("1.0.0");
@@ -347,21 +290,21 @@ describe("updatePreference", () => {
 	});
 
 	test("overwrites an existing preference value", () => {
-		withTempPrefs((prefsPath) => {
-			savePreferences({ theme: "light" }, prefsPath);
-			updatePreference("theme", "dark", prefsPath);
+		withTempPrefs(() => {
+			savePreferences({ theme: "light" });
+			updatePreference("theme", "dark");
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBe("dark");
 		});
 	});
 
 	test("can set preference to undefined to clear it", () => {
-		withTempPrefs((prefsPath) => {
-			savePreferences({ theme: "ocean", lineWrap: true }, prefsPath);
-			updatePreference("theme", undefined, prefsPath);
+		withTempPrefs(() => {
+			savePreferences({ theme: "ocean", lineWrap: true });
+			updatePreference("theme", undefined);
 
-			const prefs = loadPreferences(prefsPath);
+			const prefs = loadPreferences();
 			expect(prefs.theme).toBeUndefined();
 			expect(prefs.lineWrap).toBe(true);
 		});

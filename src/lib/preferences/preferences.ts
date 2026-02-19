@@ -22,10 +22,24 @@ export interface Preferences {
 const DEFAULT_PREFERENCES: Preferences = {};
 
 /**
+ * Override for the preferences file path, used by tests.
+ */
+let _preferencesPathOverride: string | undefined;
+
+/**
+ * Sets an override path for all preferences operations.
+ * Pass `undefined` to clear the override and use the default XDG path.
+ */
+export function setPreferencesPathForTesting(p: string | undefined): void {
+	_preferencesPathOverride = p;
+}
+
+/**
  * Gets the path to the preferences file.
  * Uses ~/.config/corsa/preferences.json following XDG conventions.
  */
 export function getPreferencesPath(): string {
+	if (_preferencesPathOverride) return _preferencesPathOverride;
 	const configDir =
 		process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 	return path.join(configDir, "corsa", "preferences.json");
@@ -34,10 +48,9 @@ export function getPreferencesPath(): string {
 /**
  * Loads user preferences from the preferences file.
  * Returns default preferences if the file doesn't exist or is invalid.
- * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
-export function loadPreferences(prefsPath?: string): Preferences {
-	const filePath = prefsPath ?? getPreferencesPath();
+export function loadPreferences(): Preferences {
+	const filePath = getPreferencesPath();
 
 	let content: string;
 	try {
@@ -93,13 +106,9 @@ export function loadPreferences(prefsPath?: string): Preferences {
 /**
  * Saves user preferences to the preferences file.
  * Creates the config directory if it doesn't exist.
- * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
-export function savePreferences(
-	preferences: Preferences,
-	prefsPath?: string,
-): void {
-	const filePath = prefsPath ?? getPreferencesPath();
+export function savePreferences(preferences: Preferences): void {
+	const filePath = getPreferencesPath();
 	const fileDir = path.dirname(filePath);
 
 	fs.mkdirSync(fileDir, { recursive: true });
@@ -110,14 +119,12 @@ export function savePreferences(
 /**
  * Updates a single preference value and saves.
  * Preserves other existing preferences.
- * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
 export function updatePreference<K extends keyof Preferences>(
 	key: K,
 	value: Preferences[K],
-	prefsPath?: string,
 ): void {
-	const current = loadPreferences(prefsPath);
+	const current = loadPreferences();
 	current[key] = value;
-	savePreferences(current, prefsPath);
+	savePreferences(current);
 }
