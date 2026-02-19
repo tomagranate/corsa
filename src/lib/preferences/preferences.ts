@@ -43,6 +43,10 @@ export function loadPreferences(prefsPath?: string): Preferences {
 	try {
 		content = fs.readFileSync(filePath, "utf-8");
 	} catch (error: unknown) {
+		// TODO: remove after CI debugging
+		console.error(
+			`[loadPreferences DEBUG] readFileSync failed | prefsPath=${prefsPath} | filePath=${filePath} | error=${error}`,
+		);
 		if (
 			error instanceof Error &&
 			"code" in error &&
@@ -117,6 +121,10 @@ export function updatePreference<K extends keyof Preferences>(
 	value: Preferences[K],
 	prefsPath?: string,
 ): void {
+	// TODO: remove after CI debugging
+	console.error(
+		`[updatePreference DEBUG] key=${String(key)} | prefsPath=${prefsPath} | typeof prefsPath=${typeof prefsPath}`,
+	);
 	const current = loadPreferences(prefsPath);
 	current[key] = value;
 	savePreferences(current, prefsPath);
