@@ -34,19 +34,19 @@ export function getPreferencesPath(): string {
 /**
  * Loads user preferences from the preferences file.
  * Returns default preferences if the file doesn't exist or is invalid.
+ * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
-export function loadPreferences(): Preferences {
-	const prefsPath = getPreferencesPath();
+export function loadPreferences(prefsPath?: string): Preferences {
+	const filePath = prefsPath ?? getPreferencesPath();
 
 	try {
-		if (!fs.existsSync(prefsPath)) {
+		if (!fs.existsSync(filePath)) {
 			return { ...DEFAULT_PREFERENCES };
 		}
 
-		const content = fs.readFileSync(prefsPath, "utf-8");
+		const content = fs.readFileSync(filePath, "utf-8");
 		const parsed = JSON.parse(content) as unknown;
 
-		// Validate that parsed content is an object
 		if (
 			typeof parsed !== "object" ||
 			parsed === null ||
@@ -55,7 +55,6 @@ export function loadPreferences(): Preferences {
 			return { ...DEFAULT_PREFERENCES };
 		}
 
-		// Extract only known preference fields
 		const prefs: Preferences = {};
 		const obj = parsed as Record<string, unknown>;
 
@@ -77,7 +76,6 @@ export function loadPreferences(): Preferences {
 
 		return prefs;
 	} catch {
-		// Return defaults if file doesn't exist or is invalid JSON
 		return { ...DEFAULT_PREFERENCES };
 	}
 }
@@ -85,23 +83,23 @@ export function loadPreferences(): Preferences {
 /**
  * Saves user preferences to the preferences file.
  * Creates the config directory if it doesn't exist.
+ * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
-export function savePreferences(preferences: Preferences): void {
-	const prefsPath = getPreferencesPath();
-	const prefsDir = path.dirname(prefsPath);
+export function savePreferences(
+	preferences: Preferences,
+	prefsPath?: string,
+): void {
+	const filePath = prefsPath ?? getPreferencesPath();
+	const fileDir = path.dirname(filePath);
 
 	try {
-		// Create directory if it doesn't exist
-		if (!fs.existsSync(prefsDir)) {
-			fs.mkdirSync(prefsDir, { recursive: true });
+		if (!fs.existsSync(fileDir)) {
+			fs.mkdirSync(fileDir, { recursive: true });
 		}
 
-		// Write preferences with pretty formatting
 		const content = JSON.stringify(preferences, null, 2);
-		fs.writeFileSync(prefsPath, content, "utf-8");
+		fs.writeFileSync(filePath, content, "utf-8");
 	} catch (error) {
-		// Silently fail - preferences are not critical
-		// Could log to debug console if available
 		console.error("Failed to save preferences:", error);
 	}
 }
@@ -109,12 +107,14 @@ export function savePreferences(preferences: Preferences): void {
 /**
  * Updates a single preference value and saves.
  * Preserves other existing preferences.
+ * @param prefsPath - Optional explicit path; defaults to getPreferencesPath().
  */
 export function updatePreference<K extends keyof Preferences>(
 	key: K,
 	value: Preferences[K],
+	prefsPath?: string,
 ): void {
-	const current = loadPreferences();
+	const current = loadPreferences(prefsPath);
 	current[key] = value;
-	savePreferences(current);
+	savePreferences(current, prefsPath);
 }
