@@ -42,8 +42,15 @@ export function loadPreferences(prefsPath?: string): Preferences {
 	let content: string;
 	try {
 		content = fs.readFileSync(filePath, "utf-8");
-	} catch {
-		return { ...DEFAULT_PREFERENCES };
+	} catch (error: unknown) {
+		if (
+			error instanceof Error &&
+			"code" in error &&
+			(error as NodeJS.ErrnoException).code === "ENOENT"
+		) {
+			return { ...DEFAULT_PREFERENCES };
+		}
+		throw error;
 	}
 
 	if (!content.trim()) {
@@ -95,13 +102,9 @@ export function savePreferences(
 	const filePath = prefsPath ?? getPreferencesPath();
 	const fileDir = path.dirname(filePath);
 
-	try {
-		fs.mkdirSync(fileDir, { recursive: true });
-		const content = JSON.stringify(preferences, null, 2);
-		fs.writeFileSync(filePath, content, "utf-8");
-	} catch (error) {
-		console.error("Failed to save preferences:", error);
-	}
+	fs.mkdirSync(fileDir, { recursive: true });
+	const content = JSON.stringify(preferences, null, 2);
+	fs.writeFileSync(filePath, content, "utf-8");
 }
 
 /**
