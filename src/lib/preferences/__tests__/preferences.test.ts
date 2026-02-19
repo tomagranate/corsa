@@ -22,6 +22,71 @@ function withTempPrefs(fn: (prefsPath: string) => void) {
 	}
 }
 
+describe("diagnostic", () => {
+	test("step-by-step: write, verify, read, loadPreferences", () => {
+		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
+		const fp = path.join(dir, "test.json");
+		const data = '{"theme":"diag-test"}';
+
+		// Step 1: write
+		fs.writeFileSync(fp, data, "utf-8");
+
+		// Step 2: file exists?
+		expect(fs.existsSync(fp)).toBe(true);
+
+		// Step 3: read back from test's fs
+		const raw = fs.readFileSync(fp, "utf-8");
+		expect(raw).toBe(data);
+
+		// Step 4: read through loadPreferences
+		const prefs = loadPreferences(fp);
+		expect(prefs.theme).toBe("diag-test");
+
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("step-by-step: savePreferences then loadPreferences", () => {
+		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
+		const fp = path.join(dir, "test.json");
+
+		savePreferences({ theme: "diag-save" }, fp);
+
+		// Verify via raw read
+		const raw = fs.readFileSync(fp, "utf-8");
+		const parsed = JSON.parse(raw);
+		expect(parsed.theme).toBe("diag-save");
+
+		// Verify via loadPreferences
+		const prefs = loadPreferences(fp);
+		expect(prefs.theme).toBe("diag-save");
+
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("step-by-step: updatePreference round-trip", () => {
+		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-diag-"));
+		const fp = path.join(dir, "test.json");
+
+		savePreferences({ theme: "before" }, fp);
+
+		// Verify save worked
+		const rawBefore = fs.readFileSync(fp, "utf-8");
+		expect(JSON.parse(rawBefore).theme).toBe("before");
+
+		updatePreference("theme", "after", fp);
+
+		// Verify update worked via raw read
+		const rawAfter = fs.readFileSync(fp, "utf-8");
+		expect(JSON.parse(rawAfter).theme).toBe("after");
+
+		// Verify via loadPreferences
+		const prefs = loadPreferences(fp);
+		expect(prefs.theme).toBe("after");
+
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
+});
+
 describe("getPreferencesPath", () => {
 	let originalXdg: string | undefined;
 	let tempDir: string;
