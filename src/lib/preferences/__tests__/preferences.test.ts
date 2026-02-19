@@ -5,34 +5,39 @@ import {
 	getPreferencesPath,
 	loadPreferences,
 	savePreferences,
-	setPreferencesPathForTesting,
 	updatePreference,
 } from "../preferences";
 
 /**
- * Runs a test with an isolated temp directory.
- * Sets the module-level path override so all preferences functions
- * use the temp file, then cleans up afterwards.
+ * Runs a test with XDG_CONFIG_HOME pointing to an isolated temp directory.
+ * All preferences functions will resolve paths under this directory.
+ * The corsa/ subdirectory is pre-created so tests can write files directly.
  */
 function withTempPrefs(fn: (prefsPath: string) => void) {
-	const dir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
-	const filePath = path.join(dir, "preferences.json");
-	setPreferencesPathForTesting(filePath);
+	const tempDir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
+	const corsaDir = path.join(tempDir, "corsa");
+	fs.mkdirSync(corsaDir);
+	const prefsPath = path.join(corsaDir, "preferences.json");
+	const originalXdg = process.env.XDG_CONFIG_HOME;
+	process.env.XDG_CONFIG_HOME = tempDir;
 	try {
-		fn(filePath);
+		fn(prefsPath);
 	} finally {
-		setPreferencesPathForTesting(undefined);
-		fs.rmSync(dir, { recursive: true, force: true });
+		if (originalXdg !== undefined) {
+			process.env.XDG_CONFIG_HOME = originalXdg;
+		} else {
+			delete process.env.XDG_CONFIG_HOME;
+		}
+		fs.rmSync(tempDir, { recursive: true, force: true });
 	}
 }
 
 describe("getPreferencesPath", () => {
 	test("uses XDG_CONFIG_HOME when set", () => {
-		const originalXdg = process.env.XDG_CONFIG_HOME;
 		const tempDir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
-		setPreferencesPathForTesting(undefined);
+		const originalXdg = process.env.XDG_CONFIG_HOME;
+		process.env.XDG_CONFIG_HOME = tempDir;
 		try {
-			process.env.XDG_CONFIG_HOME = tempDir;
 			const p = getPreferencesPath();
 			expect(p).toBe(path.join(tempDir, "corsa", "preferences.json"));
 		} finally {
@@ -47,9 +52,8 @@ describe("getPreferencesPath", () => {
 
 	test("falls back to ~/.config when XDG_CONFIG_HOME is not set", () => {
 		const originalXdg = process.env.XDG_CONFIG_HOME;
-		setPreferencesPathForTesting(undefined);
+		delete process.env.XDG_CONFIG_HOME;
 		try {
-			delete process.env.XDG_CONFIG_HOME;
 			const os = require("node:os");
 			const p = getPreferencesPath();
 			expect(p).toBe(
@@ -197,21 +201,26 @@ describe("loadPreferences", () => {
 
 describe("savePreferences", () => {
 	test("creates directory and file when they do not exist", () => {
-		const dir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
-		const nestedPath = path.join(dir, "nested", "sub", "preferences.json");
-		setPreferencesPathForTesting(nestedPath);
+		const tempDir = fs.mkdtempSync(path.join("/tmp", "corsa-prefs-test-"));
+		const originalXdg = process.env.XDG_CONFIG_HOME;
+		process.env.XDG_CONFIG_HOME = tempDir;
 		try {
-			expect(fs.existsSync(nestedPath)).toBe(false);
+			const expectedPath = path.join(tempDir, "corsa", "preferences.json");
+			expect(fs.existsSync(expectedPath)).toBe(false);
 
 			savePreferences({ theme: "ocean" });
 
-			expect(fs.existsSync(nestedPath)).toBe(true);
-			const content = fs.readFileSync(nestedPath, "utf-8");
+			expect(fs.existsSync(expectedPath)).toBe(true);
+			const content = fs.readFileSync(expectedPath, "utf-8");
 			const parsed = JSON.parse(content);
 			expect(parsed.theme).toBe("ocean");
 		} finally {
-			setPreferencesPathForTesting(undefined);
-			fs.rmSync(dir, { recursive: true, force: true });
+			if (originalXdg !== undefined) {
+				process.env.XDG_CONFIG_HOME = originalXdg;
+			} else {
+				delete process.env.XDG_CONFIG_HOME;
+			}
+			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 

@@ -22,24 +22,10 @@ export interface Preferences {
 const DEFAULT_PREFERENCES: Preferences = {};
 
 /**
- * Override for the preferences file path, used by tests.
- */
-let _preferencesPathOverride: string | undefined;
-
-/**
- * Sets an override path for all preferences operations.
- * Pass `undefined` to clear the override and use the default XDG path.
- */
-export function setPreferencesPathForTesting(p: string | undefined): void {
-	_preferencesPathOverride = p;
-}
-
-/**
  * Gets the path to the preferences file.
  * Uses ~/.config/corsa/preferences.json following XDG conventions.
  */
 export function getPreferencesPath(): string {
-	if (_preferencesPathOverride) return _preferencesPathOverride;
 	const configDir =
 		process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 	return path.join(configDir, "corsa", "preferences.json");
