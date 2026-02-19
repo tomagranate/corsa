@@ -39,45 +39,48 @@ export function getPreferencesPath(): string {
 export function loadPreferences(prefsPath?: string): Preferences {
 	const filePath = prefsPath ?? getPreferencesPath();
 
+	let content: string;
 	try {
-		if (!fs.existsSync(filePath)) {
-			return { ...DEFAULT_PREFERENCES };
-		}
-
-		const content = fs.readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(content) as unknown;
-
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Array.isArray(parsed)
-		) {
-			return { ...DEFAULT_PREFERENCES };
-		}
-
-		const prefs: Preferences = {};
-		const obj = parsed as Record<string, unknown>;
-
-		if (typeof obj.theme === "string") {
-			prefs.theme = obj.theme;
-		}
-
-		if (typeof obj.lineWrap === "boolean") {
-			prefs.lineWrap = obj.lineWrap;
-		}
-
-		if (typeof obj.latestKnownVersion === "string") {
-			prefs.latestKnownVersion = obj.latestKnownVersion;
-		}
-
-		if (typeof obj.lastUpdateCheck === "number") {
-			prefs.lastUpdateCheck = obj.lastUpdateCheck;
-		}
-
-		return prefs;
+		content = fs.readFileSync(filePath, "utf-8");
 	} catch {
 		return { ...DEFAULT_PREFERENCES };
 	}
+
+	if (!content.trim()) {
+		return { ...DEFAULT_PREFERENCES };
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return { ...DEFAULT_PREFERENCES };
+	}
+
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		return { ...DEFAULT_PREFERENCES };
+	}
+
+	const prefs: Preferences = {};
+	const obj = parsed as Record<string, unknown>;
+
+	if (typeof obj.theme === "string") {
+		prefs.theme = obj.theme;
+	}
+
+	if (typeof obj.lineWrap === "boolean") {
+		prefs.lineWrap = obj.lineWrap;
+	}
+
+	if (typeof obj.latestKnownVersion === "string") {
+		prefs.latestKnownVersion = obj.latestKnownVersion;
+	}
+
+	if (typeof obj.lastUpdateCheck === "number") {
+		prefs.lastUpdateCheck = obj.lastUpdateCheck;
+	}
+
+	return prefs;
 }
 
 /**
@@ -93,10 +96,7 @@ export function savePreferences(
 	const fileDir = path.dirname(filePath);
 
 	try {
-		if (!fs.existsSync(fileDir)) {
-			fs.mkdirSync(fileDir, { recursive: true });
-		}
-
+		fs.mkdirSync(fileDir, { recursive: true });
 		const content = JSON.stringify(preferences, null, 2);
 		fs.writeFileSync(filePath, content, "utf-8");
 	} catch (error) {
