@@ -36,57 +36,50 @@ export function getPreferencesPath(): string {
  * Returns default preferences if the file doesn't exist or is invalid.
  */
 export function loadPreferences(): Preferences {
-	const filePath = getPreferencesPath();
+	const prefsPath = getPreferencesPath();
 
-	let content: string;
 	try {
-		content = fs.readFileSync(filePath, "utf-8");
-	} catch (error: unknown) {
+		if (!fs.existsSync(prefsPath)) {
+			return { ...DEFAULT_PREFERENCES };
+		}
+
+		const content = fs.readFileSync(prefsPath, "utf-8");
+		const parsed = JSON.parse(content) as unknown;
+
+		// Validate that parsed content is an object
 		if (
-			error instanceof Error &&
-			"code" in error &&
-			(error as NodeJS.ErrnoException).code === "ENOENT"
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
 		) {
 			return { ...DEFAULT_PREFERENCES };
 		}
-		throw error;
-	}
 
-	if (!content.trim()) {
-		return { ...DEFAULT_PREFERENCES };
-	}
+		// Extract only known preference fields
+		const prefs: Preferences = {};
+		const obj = parsed as Record<string, unknown>;
 
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
+		if (typeof obj.theme === "string") {
+			prefs.theme = obj.theme;
+		}
+
+		if (typeof obj.lineWrap === "boolean") {
+			prefs.lineWrap = obj.lineWrap;
+		}
+
+		if (typeof obj.latestKnownVersion === "string") {
+			prefs.latestKnownVersion = obj.latestKnownVersion;
+		}
+
+		if (typeof obj.lastUpdateCheck === "number") {
+			prefs.lastUpdateCheck = obj.lastUpdateCheck;
+		}
+
+		return prefs;
 	} catch {
+		// Return defaults if file doesn't exist or is invalid JSON
 		return { ...DEFAULT_PREFERENCES };
 	}
-
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		return { ...DEFAULT_PREFERENCES };
-	}
-
-	const prefs: Preferences = {};
-	const obj = parsed as Record<string, unknown>;
-
-	if (typeof obj.theme === "string") {
-		prefs.theme = obj.theme;
-	}
-
-	if (typeof obj.lineWrap === "boolean") {
-		prefs.lineWrap = obj.lineWrap;
-	}
-
-	if (typeof obj.latestKnownVersion === "string") {
-		prefs.latestKnownVersion = obj.latestKnownVersion;
-	}
-
-	if (typeof obj.lastUpdateCheck === "number") {
-		prefs.lastUpdateCheck = obj.lastUpdateCheck;
-	}
-
-	return prefs;
 }
 
 /**
@@ -94,12 +87,23 @@ export function loadPreferences(): Preferences {
  * Creates the config directory if it doesn't exist.
  */
 export function savePreferences(preferences: Preferences): void {
-	const filePath = getPreferencesPath();
-	const fileDir = path.dirname(filePath);
+	const prefsPath = getPreferencesPath();
+	const prefsDir = path.dirname(prefsPath);
 
-	fs.mkdirSync(fileDir, { recursive: true });
-	const content = JSON.stringify(preferences, null, 2);
-	fs.writeFileSync(filePath, content, "utf-8");
+	try {
+		// Create directory if it doesn't exist
+		if (!fs.existsSync(prefsDir)) {
+			fs.mkdirSync(prefsDir, { recursive: true });
+		}
+
+		// Write preferences with pretty formatting
+		const content = JSON.stringify(preferences, null, 2);
+		fs.writeFileSync(prefsPath, content, "utf-8");
+	} catch (error) {
+		// Silently fail - preferences are not critical
+		// Could log to debug console if available
+		console.error("Failed to save preferences:", error);
+	}
 }
 
 /**
