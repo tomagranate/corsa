@@ -1,31 +1,13 @@
 /**
  * Check if a process with the given PID is still running.
- * Cross-platform implementation.
+ * Uses signal 0 which checks existence without sending a real signal.
  */
 export async function isProcessRunning(pid: number): Promise<boolean> {
 	if (pid <= 0) return false;
 
 	try {
-		if (process.platform === "win32") {
-			const proc = Bun.spawn(
-				["tasklist", "/FI", `PID eq ${pid}`, "/FO", "CSV"],
-				{
-					stdout: "pipe",
-					stderr: "pipe",
-				},
-			);
-			const output = await new Response(proc.stdout).text();
-			const lines = output.trim().split("\n");
-			return lines.length > 1;
-		} else {
-			// kill -0 checks existence without sending a real signal
-			const proc = Bun.spawn(["kill", "-0", pid.toString()], {
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			await proc.exited;
-			return proc.exitCode === 0;
-		}
+		process.kill(pid, 0);
+		return true;
 	} catch {
 		return false;
 	}
@@ -45,38 +27,18 @@ export async function killProcess(
 	if (pid <= 0) return false;
 
 	try {
-		if (process.platform === "win32") {
-			// /T flag kills the process tree (parent + children)
-			const args = ["taskkill", "/PID", pid.toString(), "/T"];
-			if (signal === "SIGKILL") args.push("/F");
-			const proc = Bun.spawn(args, {
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			await proc.exited;
-			return proc.exitCode === 0;
-		} else {
-			const signalFlag = signal === "SIGKILL" ? "-9" : "-15";
-
-			// Try process group kill first (negative PID signals all processes
-			// in the group, catching child processes that would otherwise be orphaned)
-			const pgProc = Bun.spawn(["kill", signalFlag, `-${pid}`], {
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			await pgProc.exited;
-			if (pgProc.exitCode === 0) return true;
-
-			// Fall back to individual PID kill
-			const proc = Bun.spawn(["kill", signalFlag, pid.toString()], {
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			await proc.exited;
-			return proc.exitCode === 0;
-		}
+		// Try process group kill first (negative PID signals all processes
+		// in the group, catching child processes that would otherwise be orphaned)
+		process.kill(-pid, signal);
+		return true;
 	} catch {
-		return false;
+		try {
+			// Fall back to individual PID kill
+			process.kill(pid, signal);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 }
 
