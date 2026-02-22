@@ -1,6 +1,6 @@
 {
 	"name": "@tomagranate/corsa",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"description": "A Terminal User Interface (TUI) for running multiple local development servers and tools simultaneously",
 	"type": "module",
 	"bin": {
