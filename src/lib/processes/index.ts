@@ -18,7 +18,9 @@ export {
 export type {
 	ChangeCallback,
 	InitializeOptions,
+	InitializeResult,
 	IsToolReadyCallback,
+	OrphanCleanupResult,
 	SubscriberKey,
 } from "./process-manager";
 export { ProcessManager } from "./process-manager";

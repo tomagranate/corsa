@@ -13,7 +13,8 @@ import {
 	removePidFromFile,
 	updatePidFile,
 } from "./pid-file";
-import { isProcessRunning, killProcessGracefully } from "./process-utils";
+import { isProcessRunning, killProcess } from "./process-utils";
+import { VirtualTerminal } from "./virtual-terminal";
 
 /**
  * PTY terminal interface for interactive processes.
@@ -50,6 +51,14 @@ const GRACEFUL_SHUTDOWN_TIMEOUT = 10000;
 /** Polling interval for checking dependency readiness */
 const DEPENDENCY_POLL_INTERVAL = 500;
 
+/** Result of orphan process cleanup at startup */
+export interface OrphanCleanupResult {
+	toolName: string;
+	toolIndex: number;
+	pid: number;
+	status: "killed" | "already_dead" | "failed";
+}
+
 /** Options for ProcessManager.initialize() */
 export interface InitializeOptions {
 	/**
@@ -57,6 +66,12 @@ export interface InitializeOptions {
 	 * Default: true
 	 */
 	cleanupOrphans?: boolean;
+}
+
+/** Result from ProcessManager.initialize() */
+export interface InitializeResult {
+	tools: ToolState[];
+	orphanCleanup: OrphanCleanupResult[];
 }
 
 export class ProcessManager {
@@ -71,6 +86,13 @@ export class ProcessManager {
 
 	/** Subscribers for change notifications */
 	private subscribers = new Map<SubscriberKey, Set<ChangeCallback>>();
+
+	/** PTY viewport dimensions for interactive tools */
+	private ptyCols = 120;
+	private ptyRows = 30;
+
+	/** Pending log messages to inject when a tool starts (keyed by tool name) */
+	private pendingStartLogs = new Map<string, string[]>();
 
 	/**
 	 * Optional callback fired when a tool is about to be restarted.
@@ -94,6 +116,32 @@ export class ProcessManager {
 	 */
 	getConfigPath(): string | undefined {
 		return this.configPath;
+	}
+
+	/**
+	 * Set the PTY viewport dimensions for interactive tools.
+	 * Resizes immediately — VT line clipping in the LogViewer prevents
+	 * the scrollbar feedback loop, so debouncing isn't needed.
+	 */
+	setPtyViewport(cols: number, rows: number): void {
+		const newCols = Math.max(40, cols);
+		const newRows = Math.max(10, rows);
+		if (newCols === this.ptyCols && newRows === this.ptyRows) return;
+		this.ptyCols = newCols;
+		this.ptyRows = newRows;
+
+		for (const tool of this.tools) {
+			if (!tool.config.interactive || tool.status !== "running") continue;
+			tool.virtualTerminal?.resize(newCols, newRows);
+			const proc = tool.process as SubprocessWithTerminal | null;
+			if (proc?.terminal && !proc.terminal.closed) {
+				try {
+					proc.terminal.resize(newCols, newRows);
+				} catch (_err) {
+					// Resize may fail if the PTY is closing
+				}
+			}
+		}
 	}
 
 	/**
@@ -150,13 +198,12 @@ export class ProcessManager {
 	async initialize(
 		configs: ToolConfig[],
 		options: InitializeOptions = {},
-	): Promise<ToolState[]> {
+	): Promise<InitializeResult> {
 		const { cleanupOrphans = true } = options;
 
-		// First, load and cleanup any orphaned processes from previous sessions
-		// (if enabled and config path is set for instance-specific cleanup)
+		let orphanCleanup: OrphanCleanupResult[] = [];
 		if (cleanupOrphans) {
-			await this.loadAndCleanupOrphanedProcesses();
+			orphanCleanup = await this.loadAndCleanupOrphanedProcesses();
 		}
 
 		this.tools = configs.map((config) => ({
@@ -168,7 +215,21 @@ export class ProcessManager {
 			logTrimCount: 0,
 			logVersion: 0,
 		}));
-		return this.tools;
+
+		// Queue cleanup messages to be injected when each tool starts
+		// (can't inject now because startTool clears logs)
+		for (const result of orphanCleanup) {
+			if (result.status === "already_dead") continue;
+			const msg =
+				result.status === "killed"
+					? `[PID Cleanup] Killed orphaned process from previous session (PID: ${result.pid})`
+					: `[PID Cleanup] Failed to kill orphaned process (PID: ${result.pid})`;
+			const existing = this.pendingStartLogs.get(result.toolName) ?? [];
+			existing.push(msg);
+			this.pendingStartLogs.set(result.toolName, existing);
+		}
+
+		return { tools: this.tools, orphanCleanup };
 	}
 
 	async startTool(index: number): Promise<void> {
@@ -185,10 +246,20 @@ export class ProcessManager {
 			let proc: SubprocessWithTerminal;
 
 			if (interactive) {
-				// PTY mode: process sees a real terminal
-				const ptyParser = new LineParser((line, isReplacement) => {
-					this.addLog(index, line, false, isReplacement);
+				// PTY mode: use a virtual terminal emulator for correct rendering
+				// of interactive programs (cursor movement, screen clears, etc.)
+				// LineParser is not used here — it can't handle cursor control
+				// sequences and produces garbled output for interactive programs.
+				// Dimensions come from setPtyViewport(), set by the UI layer
+				// which knows the exact layout (sidebar width, tab bar height, etc.)
+				const vtCols = this.ptyCols;
+				const vtRows = this.ptyRows;
+				const vt = new VirtualTerminal(vtCols, vtRows, (screenLines) => {
+					tool.screenLines = screenLines;
+					tool.logVersion++;
+					this.notifyChange(index);
 				});
+				tool.virtualTerminal = vt;
 
 				// Use type assertion: the `terminal` option is supported by the Bun
 				// runtime but not yet in the installed @types/bun
@@ -196,11 +267,10 @@ export class ProcessManager {
 					cwd: cwd || process.cwd(),
 					env: { ...spawnEnv, TERM: "xterm-256color" },
 					terminal: {
-						cols: 120,
-						rows: 30,
+						cols: vtCols,
+						rows: vtRows,
 						data: (_terminal: PtyTerminal, data: Uint8Array) => {
-							ptyParser.write(data);
-							ptyParser.flushPartial();
+							vt.write(data);
 						},
 					},
 				} as Parameters<typeof Bun.spawn>[1]) as SubprocessWithTerminal;
@@ -217,10 +287,20 @@ export class ProcessManager {
 			tool.process = proc;
 			tool.status = "running";
 			tool.logs = [];
+			tool.screenLines = undefined;
 			tool.exitCode = null;
 			tool.pid = proc.pid;
 			tool.startTime = Date.now();
 			tool.logVersion = 0;
+
+			// Inject any pending startup messages (e.g. orphan cleanup results)
+			const pendingLogs = this.pendingStartLogs.get(tool.config.name);
+			if (pendingLogs) {
+				for (const msg of pendingLogs) {
+					this.addLog(index, msg);
+				}
+				this.pendingStartLogs.delete(tool.config.name);
+			}
 
 			// Notify subscribers of status change
 			this.notifyChange(index);
@@ -255,6 +335,17 @@ export class ProcessManager {
 				// Close PTY terminal on exit
 				if (interactive && proc.terminal && !proc.terminal.closed) {
 					proc.terminal.close();
+				}
+
+				// For interactive processes: freeze the VT screen state into
+				// logs so the exit message appends normally and history is preserved
+				if (interactive && tool.screenLines) {
+					tool.logs = [...tool.screenLines];
+					tool.screenLines = undefined;
+				}
+				if (tool.virtualTerminal) {
+					tool.virtualTerminal.dispose();
+					tool.virtualTerminal = undefined;
 				}
 
 				// Only update status if not already shutting down (to preserve shutdown state)
@@ -381,7 +472,7 @@ export class ProcessManager {
 	}
 
 	/**
-	 * Close the PTY terminal for an interactive tool if open.
+	 * Close the PTY terminal and dispose the virtual terminal for an interactive tool.
 	 */
 	private closeTerminal(tool: ToolState): void {
 		try {
@@ -392,16 +483,28 @@ export class ProcessManager {
 		} catch {
 			// Ignore errors closing terminal
 		}
+		if (tool.virtualTerminal) {
+			tool.virtualTerminal.dispose();
+			tool.virtualTerminal = undefined;
+		}
 	}
 
 	async stopTool(index: number): Promise<void> {
 		const tool = this.tools[index];
 		if (!tool || !tool.process) return;
 
+		const interactive = !!tool.config.interactive;
+
 		try {
-			// Send SIGTERM for graceful shutdown
-			tool.process.kill("SIGTERM");
-			// Wait for process to exit gracefully
+			if (interactive) {
+				// For PTY processes: close the PTY first. This sends SIGHUP
+				// to the child — the natural "terminal disconnected" signal
+				// that TUI apps handle for clean shutdown.
+				this.closeTerminal(tool);
+			}
+
+			tool.process.kill(interactive ? "SIGINT" : "SIGTERM");
+
 			const timeout = new Promise((resolve) =>
 				setTimeout(resolve, GRACEFUL_SHUTDOWN_TIMEOUT),
 			);
@@ -414,9 +517,7 @@ export class ProcessManager {
 				// Still running after timeout - will be force killed in cleanup
 				return;
 			} else {
-				// Close PTY terminal if interactive
 				this.closeTerminal(tool);
-				// Process exited
 				tool.status = "stopped";
 				tool.process = null;
 				tool.pid = undefined;
@@ -450,8 +551,12 @@ export class ProcessManager {
 			tool.process &&
 			(tool.status === "running" || tool.status === "shuttingDown")
 		) {
+			const interactive = !!tool.config.interactive;
 			try {
-				tool.process.kill("SIGTERM");
+				if (interactive) {
+					this.closeTerminal(tool);
+				}
+				tool.process.kill(interactive ? "SIGINT" : "SIGTERM");
 				const timeout = new Promise((resolve) =>
 					setTimeout(resolve, GRACEFUL_SHUTDOWN_TIMEOUT),
 				);
@@ -483,6 +588,7 @@ export class ProcessManager {
 		const tool = this.tools[index];
 		if (tool) {
 			tool.logs = [];
+			tool.screenLines = undefined;
 			tool.logVersion++;
 			this.notifyChange(index);
 		}
@@ -568,13 +674,15 @@ export class ProcessManager {
 	/**
 	 * Synchronously kill all running processes.
 	 * This is used in the process.on('exit') handler where async code can't run.
-	 * Sends SIGTERM to all processes without waiting for them to exit.
 	 */
 	killAllSync(): void {
 		for (const tool of this.tools) {
 			if (tool?.process && !tool.process.killed) {
 				try {
-					tool.process.kill("SIGTERM");
+					if (tool.config.interactive) {
+						this.closeTerminal(tool);
+					}
+					tool.process.kill(tool.config.interactive ? "SIGINT" : "SIGTERM");
 				} catch {
 					// Ignore errors - process may have already exited
 				}
@@ -786,45 +894,41 @@ export class ProcessManager {
 
 	/**
 	 * Load PID file and cleanup any orphaned processes from previous sessions.
-	 * Kills any processes that are still running and logs the cleanup.
+	 * Uses SIGKILL for immediate termination — these are orphans from a
+	 * crashed/terminated session, so there's no value in asking nicely.
 	 */
-	private async loadAndCleanupOrphanedProcesses(): Promise<void> {
+	private async loadAndCleanupOrphanedProcesses(): Promise<
+		OrphanCleanupResult[]
+	> {
 		const pidData = await loadPidFile(this.configPath);
 		if (!pidData || pidData.processes.length === 0) {
-			return;
+			return [];
 		}
 
-		const cleanupLog: string[] = [];
-		cleanupLog.push(
-			`[PID Cleanup] Found ${pidData.processes.length} process(es) from previous session`,
+		const results = await Promise.all(
+			pidData.processes.map(async (entry): Promise<OrphanCleanupResult> => {
+				const running = await isProcessRunning(entry.pid);
+				if (!running) {
+					return {
+						toolName: entry.toolName,
+						toolIndex: entry.toolIndex,
+						pid: entry.pid,
+						status: "already_dead",
+					};
+				}
+
+				const killed = await killProcess(entry.pid, "SIGKILL");
+				return {
+					toolName: entry.toolName,
+					toolIndex: entry.toolIndex,
+					pid: entry.pid,
+					status: killed ? "killed" : "failed",
+				};
+			}),
 		);
 
-		for (const entry of pidData.processes) {
-			const isRunning = await isProcessRunning(entry.pid);
-			if (isRunning) {
-				cleanupLog.push(
-					`[PID Cleanup] Killing orphaned process: ${entry.toolName} (PID: ${entry.pid})`,
-				);
-				const killed = await killProcessGracefully(entry.pid, 3000);
-				if (killed) {
-					cleanupLog.push(
-						`[PID Cleanup] Successfully killed process ${entry.pid}`,
-					);
-				} else {
-					cleanupLog.push(`[PID Cleanup] Failed to kill process ${entry.pid}`);
-				}
-			} else {
-				cleanupLog.push(
-					`[PID Cleanup] Process ${entry.pid} (${entry.toolName}) is already dead`,
-				);
-			}
-		}
-
-		// Log cleanup actions (will be visible when tools start)
-		console.log(cleanupLog.join("\n"));
-
-		// Clear the PID file after cleanup - all entries are now stale
 		await deletePidFile(this.configPath);
+		return results;
 	}
 
 	/**

@@ -34,11 +34,11 @@ interface ContentWidthParams {
 }
 
 /**
- * Calculate the available width for line content (for truncation when lineWrap is off).
+ * Calculate the available width for line content.
+ * Used for both truncation (lineWrap off) and line height cache (lineWrap on).
  * Accounts for all nested container widths:
- * - Sidebar (when in vertical layout): sidebarWidth (width + border, but borders overlap)
- * - LogViewer border box: 2 (left + right)
- * - Line number gutter (when shown): lineNumberWidth + 2 (number + border + padding)
+ * - Sidebar (when in vertical layout): sidebarWidth (sidebar width + 1 margin gap)
+ * - Line number gutter (when shown): lineNumberWidth + 2 (number + border)
  * - Content padding left (when line numbers shown): 1
  * - Scrollbar area: 2 (scrollbar + paddingLeft)
  */
@@ -48,20 +48,14 @@ export function calculateContentWidth({
 	showLineNumbers,
 	lineNumberWidth,
 }: ContentWidthParams): number {
-	const logViewerBorder = 2;
 	const gutterWidth = showLineNumbers ? lineNumberWidth + 2 : 0;
 	const contentPadding = showLineNumbers ? 1 : 0;
 	const scrollbarWidth = 2;
 
-	// When sidebar is present, the sidebar's border is already included in sidebarWidth (22 = 20 + 2),
-	// but we're also counting logViewerBorder (2). Empirically adjusted to get correct truncation.
-	const effectiveSidebarWidth = sidebarWidth > 0 ? sidebarWidth - 3 : 0;
-
 	return Math.max(
 		20,
 		terminalWidth -
-			effectiveSidebarWidth -
-			logViewerBorder -
+			sidebarWidth -
 			gutterWidth -
 			contentPadding -
 			scrollbarWidth,
@@ -466,6 +460,74 @@ export function getSegmentsVisibleWidth(segments: TextSegment[]): number {
 }
 
 /**
+ * Split segments into wrapped rows at character boundaries.
+ * Works with any segment type that has a `text` property (TextSegment,
+ * StyledHighlightSegment, etc.), preserving all extra fields on each piece.
+ *
+ * Returns a single-element array when the content fits within maxWidth.
+ * Used to work around an OpenTUI wrapMode="char" rendering bug where
+ * the first character of each wrapped row is dropped.
+ */
+export function charWrapSegments<T extends { text: string }>(
+	segments: T[],
+	maxWidth: number,
+): T[][] {
+	if (segments.length === 0 || maxWidth <= 0) return [segments];
+
+	const totalWidth = getSegmentsVisibleWidth(
+		segments as unknown as TextSegment[],
+	);
+	if (totalWidth <= maxWidth) return [segments];
+
+	const rows: T[][] = [];
+	let currentRow: T[] = [];
+	let rowWidth = 0;
+
+	for (const segment of segments) {
+		let remaining = segment.text;
+
+		while (remaining.length > 0) {
+			const availableWidth = maxWidth - rowWidth;
+
+			let splitPos = 0;
+			let splitWidth = 0;
+			for (const char of remaining) {
+				const cw = getVisibleWidth(char);
+				if (splitWidth + cw > availableWidth && splitWidth > 0) break;
+				splitPos += char.length;
+				splitWidth += cw;
+			}
+
+			if (splitPos === 0) {
+				rows.push(currentRow);
+				currentRow = [];
+				rowWidth = 0;
+				continue;
+			}
+
+			currentRow.push({
+				...segment,
+				text: remaining.slice(0, splitPos),
+			} as T);
+			rowWidth += splitWidth;
+			remaining = remaining.slice(splitPos);
+
+			if (remaining.length > 0) {
+				rows.push(currentRow);
+				currentRow = [];
+				rowWidth = 0;
+			}
+		}
+	}
+
+	if (currentRow.length > 0) {
+		rows.push(currentRow);
+	}
+
+	return rows;
+}
+
+/**
  * Truncate segments to fit within the given width, adding ellipsis if needed.
  * Preserves color and attribute information for each segment.
  * Returns the original segments if they fit or if lineWrap is enabled.
@@ -521,6 +583,58 @@ export function truncateSegments(
 			}
 			// Add ellipsis as a separate segment (inherits no color - uses default)
 			result.push({ text: "…" });
+			break;
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Clip segments to a maximum width without adding an ellipsis.
+ * Used for VT-rendered content to prevent OpenTUI from wrapping lines
+ * during transient resize windows (before the child process redraws).
+ */
+export function clipSegments(
+	segments: TextSegment[],
+	maxWidth: number,
+): TextSegment[] {
+	if (segments.length === 0 || maxWidth <= 0) return segments;
+
+	const totalWidth = getSegmentsVisibleWidth(segments);
+	if (totalWidth <= maxWidth) return segments;
+
+	const result: TextSegment[] = [];
+	let currentWidth = 0;
+
+	for (const segment of segments) {
+		const segmentWidth = getVisibleWidth(segment.text);
+
+		if (currentWidth + segmentWidth <= maxWidth) {
+			result.push(segment);
+			currentWidth += segmentWidth;
+		} else {
+			const remaining = maxWidth - currentWidth;
+			if (remaining > 0) {
+				let clipped = "";
+				let clippedWidth = 0;
+				for (const char of segment.text) {
+					const cw = getVisibleWidth(char);
+					if (clippedWidth + cw > remaining) break;
+					clipped += char;
+					clippedWidth += cw;
+				}
+				if (clipped.length > 0) {
+					result.push({
+						text: clipped,
+						color: segment.color,
+						bgColor: segment.bgColor,
+						colorIndex: segment.colorIndex,
+						bgColorIndex: segment.bgColorIndex,
+						attributes: segment.attributes,
+					});
+				}
+			}
 			break;
 		}
 	}

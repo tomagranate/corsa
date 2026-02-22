@@ -358,6 +358,17 @@ export function App({
 	// Vertical TabBar has width={20} + gap (1 char) = 21 chars
 	const sidebarWidth = useVertical ? 21 : 0;
 
+	// Called by LogViewer with the actual scrollbox viewport dimensions.
+	// This is the sole source of PTY sizing — it accounts for scrollbar
+	// visibility, conditional UI elements, and avoids the race condition
+	// that arises when an estimate competes with the measured value.
+	const handleViewportSize = useCallback(
+		(cols: number, rows: number) => {
+			processManager.setPtyViewport(cols, rows);
+		},
+		[processManager],
+	);
+
 	// Line number display setting for LogViewer
 	const showLineNumbers = config.ui?.showLineNumbers ?? "auto";
 
@@ -1029,6 +1040,7 @@ export function App({
 			lineWrap={lineWrap}
 			sidebarWidth={sidebarWidth}
 			inputMode={inputMode}
+			onViewportSize={handleViewportSize}
 		/>
 	) : (
 		<scrollbox

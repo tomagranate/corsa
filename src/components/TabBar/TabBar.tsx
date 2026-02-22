@@ -51,6 +51,7 @@ export function TabBar({
 	const pendingNavigationRef = useRef(true);
 	const lastActiveIndexRef = useRef(activeIndex);
 	const lastNavigationKeyRef = useRef(navigationKey);
+	const isInitialRenderRef = useRef(true);
 
 	// Check if we need scrolling (not all tabs fit)
 	const needsScrolling = !canFitAllTabs(tools, width, showTabNumbers);
@@ -123,6 +124,11 @@ export function TabBar({
 			return;
 		}
 
+		// On first horizontal render (including after remount from layout switch),
+		// always scroll to show the active tab
+		const isInitialRender = isInitialRenderRef.current;
+		isInitialRenderRef.current = false;
+
 		// Check if this is a navigation event (navigationKey changed)
 		const isNavigation = navigationKey !== lastNavigationKeyRef.current;
 		lastNavigationKeyRef.current = navigationKey;
@@ -131,13 +137,11 @@ export function TabBar({
 		const activeIndexChanged = activeIndex !== lastActiveIndexRef.current;
 		lastActiveIndexRef.current = activeIndex;
 
-		// Only auto-scroll if navigation triggered this change (not manual scrolling)
-		// We check isNavigation OR if we had a pending navigation from a previous render
 		const shouldAutoScroll =
-			activeIndexChanged && (isNavigation || pendingNavigationRef.current);
+			isInitialRender ||
+			(activeIndexChanged && (isNavigation || pendingNavigationRef.current));
 
-		if (isNavigation && !activeIndexChanged) {
-			// Navigation key changed but active index hasn't yet - mark as pending
+		if (!isInitialRender && isNavigation && !activeIndexChanged) {
 			pendingNavigationRef.current = true;
 			return;
 		}

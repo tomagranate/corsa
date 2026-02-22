@@ -63,6 +63,14 @@ export interface ToolState {
 	logTrimCount: number;
 	/** Counter incremented on any log change (append or replace) for change detection */
 	logVersion: number;
+	/**
+	 * For interactive (PTY) processes: the full screen state from the virtual
+	 * terminal emulator, replacing the line-parser approach. When set, the
+	 * LogViewer renders these lines instead of `logs`.
+	 */
+	screenLines?: LogLine[];
+	/** The VirtualTerminal instance for interactive processes (not serializable) */
+	virtualTerminal?: import("./lib/processes/virtual-terminal").VirtualTerminal;
 }
 
 /** Health check status for a tool */

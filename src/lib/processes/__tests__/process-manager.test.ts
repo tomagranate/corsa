@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ToolConfig } from "../../../types";
-import { deletePidFile } from "../pid-file";
+import { deletePidFile, type PidFileData, savePidFile } from "../pid-file";
 import { ProcessManager } from "../process-manager";
 
 /**
@@ -58,7 +58,7 @@ describe("ProcessManager", () => {
 			},
 		];
 
-		const tools = await processManager.initialize(configs);
+		const { tools } = await processManager.initialize(configs);
 		expect(tools).toHaveLength(2);
 		expect(tools[0]?.config.name).toBe("test1");
 		expect(tools[1]?.config.name).toBe("test2");
@@ -1068,6 +1068,190 @@ command = "echo"
 		expect(tools).toHaveLength(1);
 	});
 
+	test("initialize - returns already_dead orphan results for stale PIDs", async () => {
+		// Write a PID file with a PID that doesn't exist (simulates a crashed session)
+		const pidData: PidFileData = {
+			version: 1,
+			processes: [
+				{
+					toolIndex: 0,
+					toolName: "my-server",
+					pid: 999999,
+					startTime: Date.now() - 60000,
+					command: "node",
+					args: ["server.js"],
+					cwd: process.cwd(),
+				},
+			],
+		};
+		await savePidFile(pidData);
+
+		const configs: ToolConfig[] = [
+			{ name: "my-server", command: "echo", args: ["hi"] },
+		];
+		const { orphanCleanup } = await processManager.initialize(configs);
+
+		expect(orphanCleanup).toHaveLength(1);
+		expect(orphanCleanup[0]?.toolName).toBe("my-server");
+		expect(orphanCleanup[0]?.pid).toBe(999999);
+		expect(orphanCleanup[0]?.status).toBe("already_dead");
+	});
+
+	test("initialize - orphan cleanup injects pending log into tool on start", async () => {
+		// Write a PID file referencing a real process we can kill
+		const child = Bun.spawn(["sleep", "60"]);
+		const childPid = child.pid;
+
+		const pidData: PidFileData = {
+			version: 1,
+			processes: [
+				{
+					toolIndex: 0,
+					toolName: "my-server",
+					pid: childPid,
+					startTime: Date.now(),
+					command: "sleep",
+					args: ["60"],
+					cwd: process.cwd(),
+				},
+			],
+		};
+		await savePidFile(pidData);
+
+		const configs: ToolConfig[] = [
+			{ name: "my-server", command: "echo", args: ["hello"] },
+		];
+		const { orphanCleanup } = await processManager.initialize(configs);
+
+		expect(orphanCleanup).toHaveLength(1);
+		expect(orphanCleanup[0]?.status).toBe("killed");
+
+		// Before starting, logs should be empty
+		expect(processManager.getTool(0)?.logs).toEqual([]);
+
+		// Start the tool — pending log should be injected after logs are cleared
+		await processManager.startTool(0);
+		await waitForProcessExit(processManager, 0);
+
+		const tool = processManager.getTool(0);
+		const hasCleanupLog = tool?.logs.some((log) =>
+			log.segments.some((s) => s.text.includes("[PID Cleanup]")),
+		);
+		expect(hasCleanupLog).toBe(true);
+
+		// Verify the cleanup log is the first entry
+		expect(tool?.logs[0]?.segments[0]?.text).toContain("[PID Cleanup]");
+		expect(tool?.logs[0]?.segments[0]?.text).toContain(String(childPid));
+	});
+
+	test("initialize - pending cleanup logs are only injected once", async () => {
+		const pidData: PidFileData = {
+			version: 1,
+			processes: [
+				{
+					toolIndex: 0,
+					toolName: "my-tool",
+					pid: 999999,
+					startTime: Date.now() - 60000,
+					command: "echo",
+					args: [],
+					cwd: process.cwd(),
+				},
+			],
+		};
+		await savePidFile(pidData);
+
+		// The PID is dead, so no cleanup log is injected (status: already_dead)
+		// To test the "only once" behavior, we need a killed process.
+		// Instead, test with a live process:
+		const child = Bun.spawn(["sleep", "60"]);
+		const pidData2: PidFileData = {
+			version: 1,
+			processes: [
+				{
+					toolIndex: 0,
+					toolName: "my-tool",
+					pid: child.pid,
+					startTime: Date.now(),
+					command: "sleep",
+					args: ["60"],
+					cwd: process.cwd(),
+				},
+			],
+		};
+		await savePidFile(pidData2);
+
+		const configs: ToolConfig[] = [
+			{ name: "my-tool", command: "echo", args: ["hi"] },
+		];
+		await processManager.initialize(configs);
+
+		// First start: cleanup log should appear
+		await processManager.startTool(0);
+		await waitForProcessExit(processManager, 0);
+
+		const logsAfterFirstStart = processManager.getTool(0)?.logs ?? [];
+		const cleanupCount = logsAfterFirstStart.filter((log) =>
+			log.segments.some((s) => s.text.includes("[PID Cleanup]")),
+		).length;
+		expect(cleanupCount).toBe(1);
+
+		// Restart: cleanup log should NOT appear again
+		await processManager.restartTool(0);
+		await waitForProcessExit(processManager, 0);
+
+		const logsAfterRestart = processManager.getTool(0)?.logs ?? [];
+		const cleanupCountAfterRestart = logsAfterRestart.filter((log) =>
+			log.segments.some((s) => s.text.includes("[PID Cleanup]")),
+		).length;
+		expect(cleanupCountAfterRestart).toBe(0);
+	});
+
+	test("initialize - no orphan cleanup when cleanupOrphans is disabled", async () => {
+		const child = Bun.spawn(["sleep", "60"]);
+		const pidData: PidFileData = {
+			version: 1,
+			processes: [
+				{
+					toolIndex: 0,
+					toolName: "my-tool",
+					pid: child.pid,
+					startTime: Date.now(),
+					command: "sleep",
+					args: ["60"],
+					cwd: process.cwd(),
+				},
+			],
+		};
+		await savePidFile(pidData);
+
+		const configs: ToolConfig[] = [
+			{ name: "my-tool", command: "echo", args: ["hi"] },
+		];
+		const { orphanCleanup } = await processManager.initialize(configs, {
+			cleanupOrphans: false,
+		});
+
+		expect(orphanCleanup).toEqual([]);
+
+		// Start the tool — no cleanup log should appear
+		await processManager.startTool(0);
+		await waitForProcessExit(processManager, 0);
+
+		const tool = processManager.getTool(0);
+		const hasCleanupLog = tool?.logs.some((log) =>
+			log.segments.some((s) => s.text.includes("[PID Cleanup]")),
+		);
+		expect(hasCleanupLog).toBe(false);
+
+		// Clean up the sleep process we spawned
+		try {
+			child.kill("SIGKILL");
+		} catch {
+			// already dead
+		}
+	});
+
 	// =========================================================================
 	// Interactive / PTY Tests
 	// =========================================================================
@@ -1127,8 +1311,8 @@ command = "echo"
 		await new Promise((resolve) => setTimeout(resolve, 500));
 
 		const tool = processManager.getTool(0);
-		// PTY should have echoed the input back, so it appears in logs
-		const hasEcho = tool?.logs?.some((logLine) =>
+		// PTY should have echoed the input back via the VirtualTerminal
+		const hasEcho = tool?.screenLines?.some((logLine) =>
 			logLine.segments.some((segment) => segment.text.includes("hello world")),
 		);
 		expect(hasEcho).toBe(true);

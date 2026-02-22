@@ -244,3 +244,18 @@ args = ["test-scripts/interactive-prompt.js"]
 cwd = "."
 interactive = true
 description = "Interactive prompt (PTY) — press 'i' to enter input mode"
+
+[[tools]]
+name = "interactive-fullscreen"
+command = "bun"
+args = ["test-scripts/interactive-fullscreen.js"]
+cwd = "."
+interactive = true
+description = "Full-screen TUI test — dashboard + navigable menu"
+
+[[tools]]
+name = "opencode"
+command = "opencode"
+cwd = "."
+interactive = true
+description = "opencode"

@@ -10,7 +10,7 @@ import { ApiServer, DEFAULT_MCP_PORT } from "./lib/api";
 import { copyToClipboard } from "./lib/clipboard";
 import { type Config, loadConfig } from "./lib/config";
 import { loadPreferences, updatePreference } from "./lib/preferences";
-import { ProcessManager } from "./lib/processes";
+import { type OrphanCleanupResult, ProcessManager } from "./lib/processes";
 import {
 	getTerminalTheme,
 	getTheme,
@@ -47,6 +47,28 @@ function resetTerminal(): void {
 		);
 	} catch {
 		// stdout may already be destroyed
+	}
+}
+
+const ORPHAN_CLEANUP_TOAST_DURATION = 5000;
+
+function showOrphanCleanupToasts(results: OrphanCleanupResult[]): void {
+	const killed = results.filter((r) => r.status === "killed");
+	const failed = results.filter((r) => r.status === "failed");
+
+	if (killed.length > 0) {
+		const names = killed.map((r) => r.toolName).join(", ");
+		toast.info(
+			`Killed ${killed.length} orphaned process${killed.length === 1 ? "" : "es"} from previous session: ${names}`,
+			ORPHAN_CLEANUP_TOAST_DURATION,
+		);
+	}
+	if (failed.length > 0) {
+		const names = failed.map((r) => r.toolName).join(", ");
+		toast.error(
+			`Failed to kill ${failed.length} orphaned process${failed.length === 1 ? "" : "es"}: ${names}`,
+			ORPHAN_CLEANUP_TOAST_DURATION,
+		);
 	}
 }
 
@@ -186,9 +208,10 @@ async function main() {
 		const maxLogLines = config.ui?.maxLogLines ?? 10000;
 		const processManager = new ProcessManager(maxLogLines);
 		processManager.setConfigPath(configPath);
-		const initialTools = await processManager.initialize(config.tools, {
-			cleanupOrphans: config.processes?.cleanupOrphans ?? true,
-		});
+		const { tools: initialTools, orphanCleanup } =
+			await processManager.initialize(config.tools, {
+				cleanupOrphans: config.processes?.cleanupOrphans ?? true,
+			});
 
 		// Config update callback - will be set by App component
 		let configUpdateCallback: ((newConfig: Config) => void) | null = null;
@@ -348,6 +371,9 @@ async function main() {
 				toast.error(`Config: ${warning}`, CONFIG_WARNING_TOAST_DURATION);
 			}
 		}
+
+		// Show orphan cleanup results as toasts
+		showOrphanCleanupToasts(orphanCleanup);
 	} catch (error) {
 		// Print clean error message without stack trace for expected errors
 		if (error instanceof Error) {

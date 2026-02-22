@@ -7,6 +7,7 @@ import {
 	calculateLineRows,
 	calculateScrollInfo,
 	calculateVisibleRange,
+	charWrapSegments,
 	extendLineHeightCache,
 	findLineAtRow,
 	findMatchingLines,
@@ -206,8 +207,8 @@ describe("calculateContentWidth", () => {
 			showLineNumbers: false,
 			lineNumberWidth: 3,
 		});
-		// terminalWidth (100) - logViewerBorder (2) - scrollbarWidth (2) = 96
-		expect(result).toBe(96);
+		// terminalWidth (100) - scrollbarWidth (2) = 98
+		expect(result).toBe(98);
 	});
 
 	test("accounts for sidebar when present", () => {
@@ -219,12 +220,12 @@ describe("calculateContentWidth", () => {
 		});
 		const withSidebar = calculateContentWidth({
 			terminalWidth: 100,
-			sidebarWidth: 22, // Standard sidebar width (20 + 2 border)
+			sidebarWidth: 21, // Sidebar width (20) + margin gap (1)
 			showLineNumbers: false,
 			lineNumberWidth: 3,
 		});
-		// effectiveSidebarWidth = 22 - 3 = 19
-		expect(withSidebar).toBe(withoutSidebar - 19);
+		// sidebarWidth is subtracted directly
+		expect(withSidebar).toBe(withoutSidebar - 21);
 	});
 
 	test("accounts for line numbers when shown", () => {
@@ -266,11 +267,11 @@ describe("calculateContentWidth", () => {
 	test("accounts for both sidebar and line numbers", () => {
 		const result = calculateContentWidth({
 			terminalWidth: 100,
-			sidebarWidth: 22,
+			sidebarWidth: 21,
 			showLineNumbers: true,
 			lineNumberWidth: 4,
 		});
-		// terminalWidth (100) - effectiveSidebarWidth (19) - logViewerBorder (2)
+		// terminalWidth (100) - sidebarWidth (21)
 		// - gutterWidth (4+2=6) - contentPadding (1) - scrollbarWidth (2) = 70
 		expect(result).toBe(70);
 	});
@@ -303,7 +304,7 @@ describe("calculateContentWidth", () => {
 			lineNumberWidth: 3,
 		});
 		// No sidebar adjustment when sidebarWidth is 0
-		expect(result).toBe(76); // 80 - 2 - 2
+		expect(result).toBe(78); // 80 - 2 (scrollbar)
 	});
 });
 
@@ -1142,6 +1143,141 @@ describe("Segment utilities", () => {
 			expect(result[0]?.text).toBe("exact");
 			expect(result[0]?.color).toBe("#ff0000");
 			expect(result[0]?.bgColor).toBe("#0000ff");
+		});
+	});
+
+	describe("charWrapSegments", () => {
+		test("returns single row when content fits", () => {
+			const segments: TextSegment[] = [{ text: "Hello" }];
+			const rows = charWrapSegments(segments, 10);
+			expect(rows).toEqual([[{ text: "Hello" }]]);
+		});
+
+		test("returns single row when content exactly fills width", () => {
+			const segments: TextSegment[] = [{ text: "12345" }];
+			const rows = charWrapSegments(segments, 5);
+			expect(rows).toEqual([[{ text: "12345" }]]);
+		});
+
+		test("wraps when 1 char overflows", () => {
+			const segments: TextSegment[] = [{ text: "123456" }];
+			const rows = charWrapSegments(segments, 5);
+			expect(rows).toHaveLength(2);
+			expect(rows[0]?.map((s) => s.text).join("")).toBe("12345");
+			expect(rows[1]?.map((s) => s.text).join("")).toBe("6");
+		});
+
+		test("wraps evenly into multiple rows", () => {
+			const segments: TextSegment[] = [{ text: "aabbccdd" }];
+			const rows = charWrapSegments(segments, 4);
+			expect(rows).toHaveLength(2);
+			expect(rows[0]?.map((s) => s.text).join("")).toBe("aabb");
+			expect(rows[1]?.map((s) => s.text).join("")).toBe("ccdd");
+		});
+
+		test("wraps into three rows", () => {
+			const segments: TextSegment[] = [{ text: "a".repeat(11) }];
+			const rows = charWrapSegments(segments, 5);
+			expect(rows).toHaveLength(3);
+			expect(rows[0]?.map((s) => s.text).join("")).toBe("aaaaa");
+			expect(rows[1]?.map((s) => s.text).join("")).toBe("aaaaa");
+			expect(rows[2]?.map((s) => s.text).join("")).toBe("a");
+		});
+
+		test("preserves segment styling through wrap", () => {
+			const segments: TextSegment[] = [
+				{ text: "123456", color: "#ff0000", bgColor: "#000", attributes: 1 },
+			];
+			const rows = charWrapSegments(segments, 4);
+			expect(rows).toHaveLength(2);
+			expect(rows[0]?.[0]).toEqual({
+				text: "1234",
+				color: "#ff0000",
+				bgColor: "#000",
+				attributes: 1,
+			});
+			expect(rows[1]?.[0]).toEqual({
+				text: "56",
+				color: "#ff0000",
+				bgColor: "#000",
+				attributes: 1,
+			});
+		});
+
+		test("splits across segment boundaries", () => {
+			const segments: TextSegment[] = [
+				{ text: "AAA", color: "#f00" },
+				{ text: "BBB", color: "#0f0" },
+			];
+			const rows = charWrapSegments(segments, 4);
+			expect(rows).toHaveLength(2);
+			// Row 1: "AAA" + first char of "BBB"
+			expect(rows[0]).toEqual([
+				{ text: "AAA", color: "#f00" },
+				{ text: "B", color: "#0f0" },
+			]);
+			// Row 2: remaining "BB"
+			expect(rows[1]).toEqual([{ text: "BB", color: "#0f0" }]);
+		});
+
+		test("handles wide unicode characters", () => {
+			// "中" is 2 columns wide
+			const segments: TextSegment[] = [{ text: "AB中CD" }];
+			// A(1) B(1) 中(2) C(1) D(1) = 6 columns
+			const rows = charWrapSegments(segments, 4);
+			expect(rows).toHaveLength(2);
+			// "AB中" = 4 columns, "CD" = 2 columns
+			expect(rows[0]?.map((s) => s.text).join("")).toBe("AB中");
+			expect(rows[1]?.map((s) => s.text).join("")).toBe("CD");
+		});
+
+		test("does not split wide char that would straddle boundary", () => {
+			// If only 1 column remains but next char needs 2, wrap before it
+			const segments: TextSegment[] = [{ text: "ABC中D" }];
+			// A(1) B(1) C(1) 中(2) D(1) = 6 columns
+			const rows = charWrapSegments(segments, 4);
+			expect(rows).toHaveLength(2);
+			// "ABC" fits in 3, "中" needs 2 and would exceed 4 → wraps
+			expect(rows[0]?.map((s) => s.text).join("")).toBe("ABC");
+			expect(rows[1]?.map((s) => s.text).join("")).toBe("中D");
+		});
+
+		test("returns original for empty segments", () => {
+			const rows = charWrapSegments([], 10);
+			expect(rows).toEqual([[]]);
+		});
+
+		test("handles empty text segment", () => {
+			const segments: TextSegment[] = [{ text: "" }];
+			const rows = charWrapSegments(segments, 10);
+			expect(rows).toEqual([[{ text: "" }]]);
+		});
+
+		test("works with generic types preserving extra fields", () => {
+			type HighlightSeg = TextSegment & { isMatch: boolean };
+			const segments: HighlightSeg[] = [
+				{ text: "AABBB", color: "#f00", isMatch: true },
+			];
+			const rows = charWrapSegments(segments, 3);
+			expect(rows).toHaveLength(2);
+			expect(rows[0]?.[0]).toEqual({
+				text: "AAB",
+				color: "#f00",
+				isMatch: true,
+			});
+			expect(rows[1]?.[0]).toEqual({
+				text: "BB",
+				color: "#f00",
+				isMatch: true,
+			});
+		});
+
+		test("row count matches calculateLineRows", () => {
+			const text = "a".repeat(81);
+			const segments: TextSegment[] = [{ text }];
+			const rows = charWrapSegments(segments, 80);
+			const expectedRows = calculateLineRows(text, 80, true);
+			expect(rows).toHaveLength(expectedRows);
 		});
 	});
 });

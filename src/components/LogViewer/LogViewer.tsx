@@ -100,6 +100,8 @@ import {
 	calculateContentWidth,
 	calculateScrollInfo,
 	calculateVisibleRange,
+	charWrapSegments,
+	clipSegments,
 	getLineNumberWidth,
 	highlightSegmentsWithFuzzyIndices,
 	highlightSegmentsWithSearch,
@@ -131,6 +133,8 @@ interface LogViewerProps {
 	sidebarWidth?: number;
 	/** Whether the TUI is in input mode (forwarding keystrokes to process PTY) */
 	inputMode?: boolean;
+	/** Called when the scrollbox viewport size changes (for dynamic PTY sizing) */
+	onViewportSize?: (cols: number, rows: number) => void;
 }
 
 export const LogViewer = React.memo(function LogViewer({
@@ -150,11 +154,50 @@ export const LogViewer = React.memo(function LogViewer({
 	lineWrap = true,
 	sidebarWidth = 0,
 	inputMode = false,
+	onViewportSize,
 }: LogViewerProps) {
 	const { colors, ansiPalette } = theme;
 	const scrollboxRef = useRef<ScrollBoxRenderable>(null);
 	const renderer = useRenderer();
-	const { width: terminalWidth } = useTerminalDimensions();
+	const { width: terminalWidth, height: terminalHeight } =
+		useTerminalDimensions();
+
+	// VT mode: interactive tools always render from the virtual terminal.
+	// The LineParser can't handle cursor movement / screen redraws, so for
+	// interactive tools the VT is the only source of truth.
+	// Search and line numbers are disabled in this mode.
+	const useVTRendering =
+		!!tool.config.interactive &&
+		tool.screenLines !== undefined &&
+		tool.screenLines.length > 0;
+
+	// For interactive tools, poll the actual scrollbox viewport size and
+	// report it to the ProcessManager so the PTY dimensions stay in sync.
+	// This is the sole source of PTY sizing — no competing estimate exists.
+	// Including terminalWidth/terminalHeight as deps ensures an immediate
+	// check after every terminal resize (the interval is a fallback for
+	// viewport changes not caused by terminal resizes, e.g. scrollbar).
+	const isInteractive = !!tool.config.interactive;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: terminalWidth/terminalHeight are intentional triggers — they force an immediate viewport check after every terminal resize rather than waiting for the 50ms poll.
+	useEffect(() => {
+		if (!isInteractive || !onViewportSize) return;
+
+		let lastW = 0;
+		let lastH = 0;
+		const check = () => {
+			const vp = scrollboxRef.current?.viewport;
+			const w = vp?.width ?? 0;
+			const h = vp?.height ?? 0;
+			if (w > 0 && (w !== lastW || h !== lastH)) {
+				lastW = w;
+				lastH = h;
+				onViewportSize(w, h);
+			}
+		};
+		check();
+		const id = setInterval(check, 50);
+		return () => clearInterval(id);
+	}, [isInteractive, onViewportSize, terminalWidth, terminalHeight]);
 
 	// Use the scroll info hook - only re-renders when scroll data actually changes
 	const scrollData = useScrollInfo(scrollboxRef, 100);
@@ -184,24 +227,27 @@ export const LogViewer = React.memo(function LogViewer({
 	// macOS-style scroll acceleration for smooth scrolling
 	const scrollAcceleration = useMemo(() => new MacOSScrollAccel(), []);
 
-	// Determine if line numbers should be shown
+	// Determine if line numbers should be shown (disabled in VT rendering mode)
 	const shouldShowLineNumbers =
-		showLineNumbers === true ||
-		(showLineNumbers === "auto" &&
-			terminalWidth >= LINE_NUMBER_WIDTH_THRESHOLD);
+		!useVTRendering &&
+		(showLineNumbers === true ||
+			(showLineNumbers === "auto" &&
+				terminalWidth >= LINE_NUMBER_WIDTH_THRESHOLD));
 
 	// Convert logs to plain text with stderr metadata
+	// For interactive tools, use screenLines from the virtual terminal
 	// Note: tool.logs.length is intentionally included to detect array mutations
 	// since the logs array reference stays the same when items are pushed
 	// logTrimCount forces recalculation when old logs are trimmed (which shifts indices)
+	const displaySource = useVTRendering ? (tool.screenLines ?? []) : tool.logs;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: length and trimCount detect array mutations
 	const logLines = useMemo(
 		() =>
-			tool.logs.map((logLine) => ({
+			displaySource.map((logLine) => ({
 				text: logLine.segments.map((segment) => segment.text).join(""),
 				isStderr: logLine.isStderr ?? false,
 			})),
-		[tool.logs, tool.logs.length, tool.logTrimCount],
+		[displaySource, displaySource.length, tool.logTrimCount],
 	);
 
 	const totalLines = logLines.length;
@@ -562,8 +608,8 @@ export const LogViewer = React.memo(function LogViewer({
 		}
 
 		// Normal mode keyboard handling
-		if (key.name === "/") {
-			// Enter search mode
+		if (key.name === "/" && !useVTRendering) {
+			// Enter search mode (disabled in VT rendering mode)
 			onSearchModeChange(true);
 			return;
 		}
@@ -665,8 +711,8 @@ export const LogViewer = React.memo(function LogViewer({
 
 	return (
 		<box flexGrow={1} flexDirection="column" backgroundColor={colors.surface0}>
-			{/* Search bar - no left margin, extends to sidebar edge */}
-			{(searchMode || searchQuery) && (
+			{/* Search bar - hidden in VT rendering mode */}
+			{!useVTRendering && (searchMode || searchQuery) && (
 				<box
 					height={3}
 					width="100%"
@@ -754,7 +800,7 @@ export const LogViewer = React.memo(function LogViewer({
 					paddingLeft: 1,
 				}}
 			>
-				{tool.logs.length === 0 ? (
+				{displaySource.length === 0 ? (
 					<box paddingLeft={1} paddingRight={1}>
 						<text fg={colors.text}>
 							{tool.status === "running"
@@ -824,15 +870,50 @@ export const LogViewer = React.memo(function LogViewer({
 							);
 
 							// Get the segments for this line (with ANSI colors)
-							const logLine = tool.logs[originalIndex];
+							const logLine = displaySource[originalIndex];
 							const segments = logLine?.segments ?? [];
 
-							// Truncate segments if needed (preserves colors)
-							const displaySegments = truncateSegments(
-								segments,
-								contentWidth,
-								lineWrap,
-							);
+							// VT content is clipped to the scrollbox width to
+							// prevent wrapping during resize transitions (old
+							// wider content briefly persists before the child
+							// redraws). Non-VT content uses the standard
+							// truncate/wrap logic.
+							const displaySegments = useVTRendering
+								? clipSegments(segments, terminalWidth - sidebarWidth)
+								: truncateSegments(segments, contentWidth, lineWrap);
+
+							// Helper: render an array of styled segments, inserting \n between
+							// wrapped rows so we bypass OpenTUI's wrapMode="char" bug.
+							const renderWrapped = <
+								T extends {
+									text: string;
+									color?: string;
+									bgColor?: string;
+									colorIndex?: number;
+									bgColorIndex?: number;
+									attributes?: number;
+								},
+							>(
+								segs: T[],
+								renderSeg: (seg: T, key: string) => React.ReactNode,
+							): React.ReactNode[] => {
+								const shouldWrap = lineWrap && !useVTRendering;
+								const rows = shouldWrap
+									? charWrapSegments(segs, contentWidth)
+									: [segs];
+								const elements: React.ReactNode[] = [];
+								let pos = 0;
+								for (let r = 0; r < rows.length; r++) {
+									if (r > 0) elements.push("\n");
+									const row = rows[r];
+									if (!row) continue;
+									for (const seg of row) {
+										elements.push(renderSeg(seg, `${pos}`));
+										pos += seg.text.length;
+									}
+								}
+								return elements;
+							};
 
 							// Render line content with ANSI colors and search match highlighting
 							const renderLineContent = () => {
@@ -848,18 +929,13 @@ export const LogViewer = React.memo(function LogViewer({
 
 								// Apply search highlighting on top of ANSI colors
 								if (searchQuery && isMatch) {
-									// Use fuzzy highlighting (character-level) or substring highlighting
 									const highlighted = fuzzyMode
 										? highlightSegmentsWithFuzzyIndices(
 												displaySegments,
 												fuzzyHighlightsMap.get(originalIndex) ?? [],
 											)
 										: highlightSegmentsWithSearch(displaySegments, searchQuery);
-									// Build keys based on cumulative position
-									let pos = 0;
-									return highlighted.map((seg) => {
-										const key = `${pos}-${seg.isMatch ? "m" : "s"}`;
-										pos += seg.text.length;
+									return renderWrapped(highlighted, (seg, key) => {
 										const resolved = resolveSegmentColors(
 											seg,
 											ansiPalette,
@@ -868,7 +944,7 @@ export const LogViewer = React.memo(function LogViewer({
 										);
 										return (
 											<span
-												key={key}
+												key={`${key}-${seg.isMatch ? "m" : "s"}`}
 												fg={seg.isMatch ? colors.warning : resolved.fg}
 												bg={resolved.bg}
 												attributes={seg.attributes}
@@ -880,11 +956,7 @@ export const LogViewer = React.memo(function LogViewer({
 								}
 
 								// Render segments with their ANSI colors
-								// Build keys based on cumulative position
-								let pos = 0;
-								return displaySegments.map((seg) => {
-									const key = `${pos}-s`;
-									pos += seg.text.length;
+								return renderWrapped(displaySegments, (seg, key) => {
 									const resolved = resolveSegmentColors(
 										seg,
 										ansiPalette,
@@ -893,7 +965,7 @@ export const LogViewer = React.memo(function LogViewer({
 									);
 									return (
 										<span
-											key={key}
+											key={`${key}-s`}
 											fg={resolved.fg}
 											bg={resolved.bg}
 											attributes={seg.attributes}
@@ -936,6 +1008,7 @@ export const LogViewer = React.memo(function LogViewer({
 											selectable
 											selectionBg={colors.selectionBackground}
 											selectionFg={colors.text}
+											wrapMode="word"
 										>
 											{renderLineContent()}
 										</text>
@@ -979,27 +1052,28 @@ export const LogViewer = React.memo(function LogViewer({
 				)}
 			</scrollbox>
 
-			{/* Bottom scroll indicator or spacer */}
-			{scrollInfo.linesBelow > 0 ? (
-				<box
-					height={1}
-					width="100%"
-					justifyContent="center"
-					alignItems="center"
-					backgroundColor={colors.surface0}
-					marginLeft={needsLeftMargin ? 1 : 0}
-					onMouseUp={scrollToBottom}
-				>
-					<text fg={colors.textMuted}>↓ {scrollInfo.linesBelow} more ↓</text>
-				</box>
-			) : (
-				<box
-					height={1}
-					width="100%"
-					backgroundColor={colors.surface0}
-					marginLeft={needsLeftMargin ? 1 : 0}
-				/>
-			)}
+			{/* Bottom scroll indicator or spacer (hidden for VT content to maximize viewport) */}
+			{!useVTRendering &&
+				(scrollInfo.linesBelow > 0 ? (
+					<box
+						height={1}
+						width="100%"
+						justifyContent="center"
+						alignItems="center"
+						backgroundColor={colors.surface0}
+						marginLeft={needsLeftMargin ? 1 : 0}
+						onMouseUp={scrollToBottom}
+					>
+						<text fg={colors.textMuted}>↓ {scrollInfo.linesBelow} more ↓</text>
+					</box>
+				) : (
+					<box
+						height={1}
+						width="100%"
+						backgroundColor={colors.surface0}
+						marginLeft={needsLeftMargin ? 1 : 0}
+					/>
+				))}
 
 			{/* Input mode indicator */}
 			{inputMode && (

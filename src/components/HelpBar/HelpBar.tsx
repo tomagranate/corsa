@@ -126,7 +126,6 @@ function getHintsForMode(mode: HelpBarMode): HintItem[] {
 					action: "shortcuts",
 					compactAction: "keys",
 				},
-				{ key: "/", compactKey: "/", action: "search", compactAction: "find" },
 			];
 
 		default: {
