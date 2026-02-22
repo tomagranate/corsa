@@ -6,34 +6,31 @@ describe("HelpBar", () => {
 		const sampleHints = [
 			{ key: "^P", compactKey: "^P", action: "palette", compactAction: "cmd" },
 			{ key: "?", compactKey: "?", action: "shortcuts", compactAction: "keys" },
-			{ key: "j/k", compactKey: "j/k", action: "tabs", compactAction: "tabs" },
+			{ key: "←/→", compactKey: "←→", action: "tabs", compactAction: "tabs" },
 			{ key: "/", compactKey: "/", action: "search", compactAction: "find" },
 			{ key: "q", compactKey: "q", action: "quit", compactAction: "quit" },
 		];
 
 		test("uses full format when width is sufficient", () => {
-			// Full format: "^P: palette | ?: shortcuts | j/k: tabs | /: search | q: quit"
 			const result = formatHints(sampleHints, 100);
 			expect(result).toBe(
-				"^P: palette | ?: shortcuts | j/k: tabs | /: search | q: quit",
+				"^P: palette | ?: shortcuts | ←/→: tabs | /: search | q: quit",
 			);
 		});
 
 		test("uses compact format when width is limited", () => {
-			// Compact format: "^P:cmd | ?:keys | j/k:tabs | /:find | q:quit"
 			const result = formatHints(sampleHints, 50);
-			expect(result).toBe("^P:cmd | ?:keys | j/k:tabs | /:find | q:quit");
+			expect(result).toBe("^P:cmd | ?:keys | ←→:tabs | /:find | q:quit");
 		});
 
 		test("uses ultra-compact format when width is very limited", () => {
-			// Ultra-compact: "^P ? j/k / q"
 			const result = formatHints(sampleHints, 20);
-			expect(result).toBe("^P ? j/k / q");
+			expect(result).toBe("^P ? ←→ / q");
 		});
 
 		test("truncates with ellipsis when extremely limited", () => {
 			const result = formatHints(sampleHints, 8);
-			expect(result).toBe("^P ? j/…");
+			expect(result).toBe("^P ? ←→…");
 			expect(result.length).toBe(8);
 		});
 

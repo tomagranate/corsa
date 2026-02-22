@@ -880,18 +880,18 @@ export function App({
 			}
 		};
 
-		if (key.name === "h" || key.name === "left") {
+		if (key.name === "left") {
 			navigatePrev();
 		}
-		if (key.name === "l" || key.name === "right") {
+		if (key.name === "right") {
 			navigateNext();
 		}
-		if (key.name === "j" || key.name === "down") {
+		if (key.name === "down") {
 			if (useVertical) {
 				navigateNext();
 			}
 		}
-		if (key.name === "k" || key.name === "up") {
+		if (key.name === "up") {
 			if (useVertical) {
 				navigatePrev();
 			}

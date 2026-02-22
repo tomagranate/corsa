@@ -14,22 +14,60 @@ When implementing new features, you MUST also write tests:
    - `src/lib/clipboard/clipboard.ts` → `src/lib/clipboard/__tests__/clipboard.test.ts`
    - `src/components/LogViewer.tsx` → `src/components/__tests__/LogViewer.test.ts`
 
+## Testing Philosophy
+
+- **Test behavior, not implementation.** Assert on what the user sees and experiences, not on internal state or function calls. The implementation is incidental; tests should only verify the observable outcome.
+- **No mocks unless absolutely necessary.** Mocks hide integration bugs. Only mock when running the real thing is virtually impossible in a test environment:
+  - `global.fetch` for HTTP requests (health checks, update checker)
+  - System clipboard (unavailable in headless CI)
+  - Opening a browser (`open` command)
+- **Use real dependencies whenever possible:**
+  - Use a real `ProcessManager` with trivial commands (`echo`, `printf`, `cat`, `sleep`)
+  - Construct `Config` objects directly in TypeScript — no TOML files needed
+  - Use real `VirtualTerminal`, `ThemeProvider`, etc.
+
+## React Component Tests
+
+Use OpenTUI's built-in test renderer for component and integration tests:
+
+```typescript
+import { testRender } from "@opentui/react/test-utils";
+
+const { renderer, mockInput, mockMouse, renderOnce, captureCharFrame, resize } =
+  await testRender(<MyComponent />, { width: 80, height: 24 });
+
+// Render and capture output
+await renderOnce();
+const frame = captureCharFrame();
+
+// Assert on what's visible
+expect(frame).toContain("expected text");
+
+// Simulate user input
+mockInput.pressKey("r");
+await renderOnce();
+
+// Clean up
+renderer.destroy();
+```
+
+- `captureCharFrame()` returns the rendered terminal as a string — assert on this
+- `mockInput` provides keyboard simulation: `pressKey()`, `typeText()`, `pressEnter()`, `pressArrow()`, etc.
+- `mockMouse` provides mouse simulation: `click()`, `scroll()`, `drag()`, etc.
+- `resize(width, height)` simulates terminal resize
+- Wrap components in `<ThemeProvider>` just like production
+
 ## Test Guidelines
 
 - Use `bun test` as the test runner
 - Use `describe` blocks to group related tests
 - Use clear, descriptive test names that explain expected behavior
 - Test both success cases and edge cases
-- For React components, test:
-  - Rendering with different props
-  - User interactions (keyboard, mouse)
-  - State changes
-  - Edge cases (empty data, error states)
 
 ## Running Tests
 
-\`\`\`bash
+```bash
 bun test              # Run all tests
 bun test --watch      # Run in watch mode
 bun test <pattern>    # Run tests matching pattern
-\`\`\`
+```
