@@ -85,6 +85,7 @@ corsa
 | `corsa` | Start the TUI dashboard |
 | `corsa init` | Create a sample config file in the current directory |
 | `corsa mcp` | Start the MCP server for AI agent integration |
+| `corsa ctl <subcommand>` | Control running processes through the MCP API |
 
 ### Options
 
@@ -92,6 +93,19 @@ corsa
 |--------|-------------|
 | `-c, --config <path>` | Path to config file (default: `corsa.config.toml`) |
 | `-h, --help` | Show help message |
+| `-v, --version` | Show version information |
+
+### `ctl` Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `corsa ctl list` | List all processes with status and recent logs (`ps`/`ls` aliases) |
+| `corsa ctl logs <name>` | Get recent logs for a process |
+| `corsa ctl stop <name>` | Stop a running process (`rm` alias) |
+| `corsa ctl restart <name>` | Restart a process |
+| `corsa ctl clear <name>` | Clear process logs |
+| `corsa ctl send-keys <name> --key <value>` | Send keypresses/text to an interactive process |
+| `corsa ctl reload` | Reload config and restart processes |
 
 ### Examples
 
@@ -108,6 +122,22 @@ corsa init
 
 # Start MCP server for AI integration
 corsa mcp
+
+# List processes via CLI control API
+corsa ctl list
+corsa ctl ls
+
+# Read logs with filtering
+corsa ctl logs backend --lines 200 --search ERROR --search-type substring
+
+# Stop a process (alias)
+corsa ctl rm backend
+
+# Send interactive input
+corsa ctl send-keys repl --key "help" --key return
+
+# Machine-readable output for agents/scripts
+corsa ctl list --json
 ```
 
 ## Configuration

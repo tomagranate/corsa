@@ -7,6 +7,7 @@
  *   --version, -v               Show version
  *   init                        Initialize a new config file
  *   mcp                         Start the MCP server
+ *   ctl                         Control processes via the MCP API
  *   update                      Update corsa to the latest version
  */
 
@@ -14,14 +15,35 @@
 import packageJson from "../package.json";
 
 export interface CliArgs {
-	/** Subcommand to run (init, mcp, update) */
-	command?: "init" | "mcp" | "update";
+	/** Subcommand to run (init, mcp, ctl, update) */
+	command?: "init" | "mcp" | "ctl" | "update";
 	/** Path to config file (--config/-c) */
 	configPath?: string;
+	/** Parsed args for `corsa ctl` */
+	ctl?: CtlArgs;
 	/** Whether to show help (--help/-h) */
 	showHelp: boolean;
 	/** Whether to show version (--version/-v) */
 	showVersion: boolean;
+}
+
+export type CtlSubcommand =
+	| "list"
+	| "logs"
+	| "stop"
+	| "restart"
+	| "clear"
+	| "send-keys"
+	| "reload";
+
+export interface CtlArgs {
+	subcommand: CtlSubcommand;
+	name?: string;
+	lines?: number;
+	search?: string;
+	searchType?: "substring" | "fuzzy";
+	keys: string[];
+	json: boolean;
 }
 
 /**
@@ -57,6 +79,15 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): CliArgs {
 		} else if (arg === "mcp") {
 			args.command = "mcp";
 			i++;
+		} else if (arg === "ctl") {
+			args.command = "ctl";
+			const ctl = parseCtlArgs(argv.slice(i + 1));
+			if (ctl) {
+				args.ctl = ctl;
+			} else {
+				args.showHelp = true;
+			}
+			i = argv.length;
 		} else if (arg === "update" || arg === "upgrade") {
 			args.command = "update";
 			i++;
@@ -75,6 +106,124 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): CliArgs {
 	return args;
 }
 
+function parseCtlArgs(argv: string[]): CtlArgs | undefined {
+	const first = argv[0];
+	if (!first || first === "--help" || first === "-h") {
+		return undefined;
+	}
+
+	const validSubcommands: CtlSubcommand[] = [
+		"list",
+		"logs",
+		"stop",
+		"restart",
+		"clear",
+		"send-keys",
+		"reload",
+	];
+	const aliases: Record<string, CtlSubcommand> = {
+		ps: "list",
+		ls: "list",
+		rm: "stop",
+	};
+	const normalized = aliases[first] ?? first;
+	if (!validSubcommands.includes(normalized as CtlSubcommand)) {
+		console.error(`Error: Unknown ctl command: ${first}`);
+		console.error("Run 'corsa --help' for usage information.");
+		process.exit(1);
+	}
+
+	const ctl: CtlArgs = {
+		subcommand: normalized as CtlSubcommand,
+		keys: [],
+		json: false,
+	};
+
+	let i = 1;
+
+	// Commands that require a process name
+	const needsName = new Set<CtlSubcommand>([
+		"logs",
+		"stop",
+		"restart",
+		"clear",
+		"send-keys",
+	]);
+	if (needsName.has(ctl.subcommand)) {
+		const maybeName = argv[i];
+		if (!maybeName || maybeName.startsWith("-")) {
+			console.error(
+				`Error: corsa ctl ${ctl.subcommand} requires a process name`,
+			);
+			process.exit(1);
+		}
+		ctl.name = maybeName;
+		i++;
+	}
+
+	while (i < argv.length) {
+		const arg = argv[i];
+		if (arg === "--json") {
+			ctl.json = true;
+			i++;
+		} else if (arg === "--lines") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --lines requires a number");
+				process.exit(1);
+			}
+			const parsed = Number.parseInt(value, 10);
+			if (!Number.isFinite(parsed) || parsed <= 0) {
+				console.error("Error: --lines must be a positive integer");
+				process.exit(1);
+			}
+			ctl.lines = parsed;
+			i += 2;
+		} else if (arg === "--search") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --search requires a query string");
+				process.exit(1);
+			}
+			ctl.search = value;
+			i += 2;
+		} else if (arg === "--search-type") {
+			const value = argv[i + 1];
+			if (!value || !["substring", "fuzzy"].includes(value)) {
+				console.error("Error: --search-type must be 'substring' or 'fuzzy'");
+				process.exit(1);
+			}
+			ctl.searchType = value as "substring" | "fuzzy";
+			i += 2;
+		} else if (arg === "--key") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --key requires a key or text value");
+				process.exit(1);
+			}
+			ctl.keys.push(value);
+			i += 2;
+		} else if (arg === "--help" || arg === "-h") {
+			return undefined;
+		} else if (arg?.startsWith("-")) {
+			console.error(`Error: Unknown option: ${arg}`);
+			process.exit(1);
+		} else {
+			console.error(`Error: Unexpected argument: ${arg}`);
+			process.exit(1);
+		}
+	}
+
+	if (ctl.subcommand === "send-keys" && ctl.keys.length === 0) {
+		console.error(
+			"Error: corsa ctl send-keys requires at least one --key value",
+		);
+		process.exit(1);
+	}
+
+	return ctl;
+}
+
 /**
  * Get the help text for the CLI.
  */
@@ -86,6 +235,7 @@ Usage:
   corsa [options]              Start the TUI dashboard
   corsa init                   Create a sample config file in the current directory
   corsa mcp                    Start the MCP server for AI agent integration
+  corsa ctl <command>          Control processes through the MCP API
   corsa update                 Update corsa to the latest version
 
 Options:
@@ -98,7 +248,29 @@ Examples:
   corsa -c myconfig.toml       Start with custom config file
   corsa init                   Create corsa.config.toml in current directory
   corsa mcp                    Start MCP server (configure in your IDE)
+  corsa ctl list               List all managed processes
+  corsa ctl ls                 Alias for list
+  corsa ctl logs api --lines 200 --search error
+  corsa ctl rm api             Alias for stop
+  corsa ctl send-keys api --key "npm test" --key return
+  corsa ctl list --json        Output process list as JSON
   corsa update                 Update to the latest version
+
+ctl commands:
+  list                         List all processes (aliases: ps, ls)
+  logs <name>                  Get logs for a process
+  stop <name>                  Stop a process (alias: rm)
+  restart <name>               Restart a process
+  clear <name>                 Clear process logs
+  send-keys <name> --key <k>   Send keypresses/text to an interactive process
+  reload                       Reload config and restart processes
+
+ctl options:
+  --json                       Output JSON response data
+  --lines <n>                  Log line limit (logs command)
+  --search <query>             Log search query (logs command)
+  --search-type <mode>         Search mode: substring|fuzzy (logs command)
+  --key <value>                Key/text input (repeatable, send-keys command)
 
 Documentation: https://github.com/tomagranate/corsa
 `.trim();

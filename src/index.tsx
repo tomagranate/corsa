@@ -3,7 +3,7 @@ import { createRoot } from "@opentui/react";
 import { createElement } from "react";
 import { App } from "./App";
 import { getHelpText, getVersion, parseArgs } from "./cli";
-import { runInit, runMcp, runUpdate } from "./commands";
+import { runCtl, runInit, runMcp, runUpdate } from "./commands";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { toast } from "./components/Toast";
 import { ApiServer, DEFAULT_MCP_PORT } from "./lib/api";
@@ -97,6 +97,12 @@ async function main() {
 	// Handle mcp command
 	if (args.command === "mcp") {
 		await runMcp(args.configPath);
+		return;
+	}
+
+	// Handle ctl command
+	if (args.command === "ctl" && args.ctl) {
+		await runCtl(args.ctl, args.configPath);
 		return;
 	}
 
