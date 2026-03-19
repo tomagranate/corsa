@@ -76,6 +76,12 @@ cwd = "./backend"
 corsa
 ```
 
+4. Optional: install the `corsa` AI skill from this repository:
+
+```bash
+npx skills add tomagranate/corsa
+```
+
 ## CLI Reference
 
 ### Commands
