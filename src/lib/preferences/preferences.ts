@@ -21,13 +21,24 @@ export interface Preferences {
  */
 const DEFAULT_PREFERENCES: Preferences = {};
 
+export interface PreferencesPathOptions {
+	xdgConfigHome?: string;
+	homeDir?: string;
+	ignoreEnvXdg?: boolean;
+}
+
 /**
  * Gets the path to the preferences file.
  * Uses ~/.config/corsa/preferences.json following XDG conventions.
  */
-export function getPreferencesPath(): string {
+export function getPreferencesPath(options?: PreferencesPathOptions): string {
+	const xdgFromEnv = options?.ignoreEnvXdg
+		? undefined
+		: process.env.XDG_CONFIG_HOME;
 	const configDir =
-		process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+		options?.xdgConfigHome ??
+		xdgFromEnv ??
+		path.join(options?.homeDir ?? os.homedir(), ".config");
 	return path.join(configDir, "corsa", "preferences.json");
 }
 
@@ -35,15 +46,15 @@ export function getPreferencesPath(): string {
  * Loads user preferences from the preferences file.
  * Returns default preferences if the file doesn't exist or is invalid.
  */
-export function loadPreferences(): Preferences {
-	const prefsPath = getPreferencesPath();
+export function loadPreferences(prefsPath?: string): Preferences {
+	const resolvedPath = prefsPath ?? getPreferencesPath();
 
 	try {
-		if (!fs.existsSync(prefsPath)) {
+		if (!fs.existsSync(resolvedPath)) {
 			return { ...DEFAULT_PREFERENCES };
 		}
 
-		const content = fs.readFileSync(prefsPath, "utf-8");
+		const content = fs.readFileSync(resolvedPath, "utf-8");
 		const parsed = JSON.parse(content) as unknown;
 
 		// Validate that parsed content is an object
@@ -86,9 +97,12 @@ export function loadPreferences(): Preferences {
  * Saves user preferences to the preferences file.
  * Creates the config directory if it doesn't exist.
  */
-export function savePreferences(preferences: Preferences): void {
-	const prefsPath = getPreferencesPath();
-	const prefsDir = path.dirname(prefsPath);
+export function savePreferences(
+	preferences: Preferences,
+	prefsPath?: string,
+): void {
+	const resolvedPath = prefsPath ?? getPreferencesPath();
+	const prefsDir = path.dirname(resolvedPath);
 
 	try {
 		// Create directory if it doesn't exist
@@ -98,7 +112,7 @@ export function savePreferences(preferences: Preferences): void {
 
 		// Write preferences with pretty formatting
 		const content = JSON.stringify(preferences, null, 2);
-		fs.writeFileSync(prefsPath, content, "utf-8");
+		fs.writeFileSync(resolvedPath, content, "utf-8");
 	} catch (error) {
 		// Silently fail - preferences are not critical
 		// Could log to debug console if available
@@ -113,8 +127,9 @@ export function savePreferences(preferences: Preferences): void {
 export function updatePreference<K extends keyof Preferences>(
 	key: K,
 	value: Preferences[K],
+	prefsPath?: string,
 ): void {
-	const current = loadPreferences();
+	const current = loadPreferences(prefsPath);
 	current[key] = value;
-	savePreferences(current);
+	savePreferences(current, prefsPath);
 }

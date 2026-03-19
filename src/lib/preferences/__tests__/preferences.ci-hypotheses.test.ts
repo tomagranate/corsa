@@ -56,6 +56,10 @@ function makeTempDir(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+function prefsPathForDir(dir: string): string {
+	return path.join(dir, "corsa", "preferences.json");
+}
+
 function cleanupDir(dir: string): void {
 	fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -102,14 +106,15 @@ describe("preferences CI hypotheses", () => {
 	testExclusive("H2: savePreferences silently swallows write errors", () => {
 		const dir = makeTempDir("corsa-h2-");
 		const readOnly = path.join(dir, "readonly");
+		const prefsPath = prefsPathForDir(readOnly);
 		fs.mkdirSync(readOnly, { recursive: true });
 		fs.chmodSync(readOnly, 0o500);
 
 		try {
-			withXdg(readOnly, () => {
-				expect(() => savePreferences({ theme: "blocked" })).not.toThrow();
-				expect(fs.existsSync(getPreferencesPath())).toBe(false);
-			});
+			expect(() =>
+				savePreferences({ theme: "blocked" }, prefsPath),
+			).not.toThrow();
+			expect(fs.existsSync(prefsPath)).toBe(false);
 		} finally {
 			fs.chmodSync(readOnly, 0o700);
 			cleanupDir(dir);
@@ -133,29 +138,13 @@ describe("preferences CI hypotheses", () => {
 	testExclusive(
 		"H4: HOME/XDG absence changes preferences path unexpectedly",
 		() => {
-			const originalHome = process.env.HOME;
-			const originalXdg = process.env.XDG_CONFIG_HOME;
-			delete process.env.HOME;
-			delete process.env.XDG_CONFIG_HOME;
-
-			try {
-				const prefsPath = getPreferencesPath();
-				expect(prefsPath.endsWith(path.join("corsa", "preferences.json"))).toBe(
-					true,
-				);
-			} finally {
-				if (originalHome === undefined) {
-					delete process.env.HOME;
-				} else {
-					process.env.HOME = originalHome;
-				}
-
-				if (originalXdg === undefined) {
-					delete process.env.XDG_CONFIG_HOME;
-				} else {
-					process.env.XDG_CONFIG_HOME = originalXdg;
-				}
-			}
+			const prefsPath = getPreferencesPath({
+				homeDir: "/home/ci-user",
+				ignoreEnvXdg: true,
+			});
+			expect(prefsPath).toBe(
+				path.join("/home/ci-user", ".config", "corsa", "preferences.json"),
+			);
 		},
 	);
 
@@ -164,21 +153,16 @@ describe("preferences CI hypotheses", () => {
 		() => {
 			const dirA = makeTempDir("corsa-h5-a-");
 			const dirB = makeTempDir("corsa-h5-b-");
+			const prefsPathA = prefsPathForDir(dirA);
+			const prefsPathB = prefsPathForDir(dirB);
 
 			try {
-				withXdg(dirA, () => {
-					savePreferences({ theme: "light" });
-				});
+				savePreferences({ theme: "light" }, prefsPathA);
+				updatePreference("theme", "dark", prefsPathB);
 
-				withXdg(dirB, () => {
-					updatePreference("theme", "dark");
-				});
-
-				withXdg(dirA, () => {
-					const prefs = loadPreferences();
-					// Passes when hypothesis is true: original file in A was untouched.
-					expect(prefs.theme).toBe("light");
-				});
+				const prefs = loadPreferences(prefsPathA);
+				// Passes when hypothesis is true: original file in A was untouched.
+				expect(prefs.theme).toBe("light");
 			} finally {
 				cleanupDir(dirA);
 				cleanupDir(dirB);
@@ -221,14 +205,12 @@ describe("preferences CI hypotheses", () => {
 
 	testExclusive("H7: empty/truncated prefs file collapses to defaults", () => {
 		const dir = makeTempDir("corsa-h7-");
+		const prefsPath = prefsPathForDir(dir);
 		try {
-			withXdg(dir, () => {
-				const prefsPath = getPreferencesPath();
-				fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
-				fs.writeFileSync(prefsPath, "", "utf-8");
-				const prefs = loadPreferences();
-				expect(prefs).toEqual({});
-			});
+			fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+			fs.writeFileSync(prefsPath, "", "utf-8");
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs).toEqual({});
 		} finally {
 			cleanupDir(dir);
 		}
@@ -236,14 +218,13 @@ describe("preferences CI hypotheses", () => {
 
 	testExclusive("H8: undefined values are omitted from persisted JSON", () => {
 		const dir = makeTempDir("corsa-h8-");
+		const prefsPath = prefsPathForDir(dir);
 		try {
-			withXdg(dir, () => {
-				savePreferences({ theme: undefined, lineWrap: true });
-				const raw = fs.readFileSync(getPreferencesPath(), "utf-8");
-				const parsed = JSON.parse(raw) as Record<string, unknown>;
-				expect("theme" in parsed).toBe(false);
-				expect(parsed.lineWrap).toBe(true);
-			});
+			savePreferences({ theme: undefined, lineWrap: true }, prefsPath);
+			const raw = fs.readFileSync(prefsPath, "utf-8");
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			expect("theme" in parsed).toBe(false);
+			expect(parsed.lineWrap).toBe(true);
 		} finally {
 			cleanupDir(dir);
 		}
@@ -253,19 +234,18 @@ describe("preferences CI hypotheses", () => {
 		"H9: immediate read-after-write with sync fs can still lose data",
 		() => {
 			const dir = makeTempDir("corsa-h9-");
+			const prefsPath = prefsPathForDir(dir);
 			try {
-				withXdg(dir, () => {
-					let misses = 0;
-					for (let i = 0; i < 200; i++) {
-						savePreferences({ theme: `theme-${i}` });
-						const prefs = loadPreferences();
-						if (prefs.theme !== `theme-${i}`) {
-							misses++;
-						}
+				let misses = 0;
+				for (let i = 0; i < 200; i++) {
+					savePreferences({ theme: `theme-${i}` }, prefsPath);
+					const prefs = loadPreferences(prefsPath);
+					if (prefs.theme !== `theme-${i}`) {
+						misses++;
 					}
-					// Passes when hypothesis is false.
-					expect(misses).toBe(0);
-				});
+				}
+				// Passes when hypothesis is false.
+				expect(misses).toBe(0);
 			} finally {
 				cleanupDir(dir);
 			}
