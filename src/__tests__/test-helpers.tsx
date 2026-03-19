@@ -32,6 +32,41 @@ export interface TestApp {
 	cleanup: () => Promise<void>;
 }
 
+function setActEnvironment(enabled: boolean): void {
+	// @ts-expect-error - IS_REACT_ACT_ENVIRONMENT is a global test flag
+	globalThis.IS_REACT_ACT_ENVIRONMENT = enabled;
+}
+
+function withActEnvironmentSync<T>(fn: () => T): T {
+	// @ts-expect-error - IS_REACT_ACT_ENVIRONMENT is a global test flag
+	const previous = globalThis.IS_REACT_ACT_ENVIRONMENT;
+	setActEnvironment(true);
+	try {
+		return fn();
+	} finally {
+		setActEnvironment(Boolean(previous));
+	}
+}
+
+async function withActEnvironment<T>(fn: () => Promise<T> | T): Promise<T> {
+	// @ts-expect-error - IS_REACT_ACT_ENVIRONMENT is a global test flag
+	const previous = globalThis.IS_REACT_ACT_ENVIRONMENT;
+	setActEnvironment(true);
+	try {
+		return await fn();
+	} finally {
+		setActEnvironment(Boolean(previous));
+	}
+}
+
+async function sleepWithAct(ms: number): Promise<void> {
+	await withActEnvironment(async () => {
+		await act(async () => {
+			await new Promise<void>((resolve) => setTimeout(resolve, ms));
+		});
+	});
+}
+
 function buildConfig(tools: ToolConfig[], overrides?: Partial<Config>): Config {
 	return {
 		tools,
@@ -67,30 +102,33 @@ export async function renderApp(options: RenderAppOptions): Promise<TestApp> {
 	const config = buildConfig(toolConfigs, configOverrides);
 	const theme = getTheme(DEFAULT_THEME_KEY);
 
-	// @ts-expect-error - IS_REACT_ACT_ENVIRONMENT is a global test flag
-	globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 	const testSetup = await createTestRenderer({ width, height, kittyKeyboard });
 	const root = createRoot(testSetup.renderer);
 
-	act(() => {
-		root.render(
-			<ThemeProvider initialTheme={theme} initialThemeKey={DEFAULT_THEME_KEY}>
-				<App
-					processManager={processManager}
-					initialTools={initialTools}
-					renderer={testSetup.renderer}
-					config={config}
-					configPath="/tmp/test-corsa.config.toml"
-					initialLineWrap={initialLineWrap}
-				/>
-			</ThemeProvider>,
-		);
+	await withActEnvironment(async () => {
+		act(() => {
+			root.render(
+				<ThemeProvider initialTheme={theme} initialThemeKey={DEFAULT_THEME_KEY}>
+					<App
+						processManager={processManager}
+						initialTools={initialTools}
+						renderer={testSetup.renderer}
+						config={config}
+						configPath="/tmp/test-corsa.config.toml"
+						initialLineWrap={initialLineWrap}
+					/>
+				</ThemeProvider>,
+			);
+		});
 	});
 
 	const cleanup = async () => {
-		act(() => {
-			root.unmount();
+		await withActEnvironment(async () => {
+			act(() => {
+				root.unmount();
+			});
+			// Flush any async state updates queued by unmount effects.
+			await act(async () => {});
 		});
 		try {
 			await processManager.cleanup();
@@ -99,59 +137,103 @@ export async function renderApp(options: RenderAppOptions): Promise<TestApp> {
 		}
 		testSetup.renderer.destroy();
 		await deletePidFile();
-		// @ts-expect-error - IS_REACT_ACT_ENVIRONMENT is a global test flag
-		globalThis.IS_REACT_ACT_ENVIRONMENT = false;
 	};
 
 	// Wrap input methods in act() so React processes state updates
 	const wrappedMockInput = {
 		...testSetup.mockInput,
 		pressKey: (...args: Parameters<typeof testSetup.mockInput.pressKey>) => {
-			act(() => testSetup.mockInput.pressKey(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressKey(...args));
+			});
 		},
 		pressArrow: (
 			...args: Parameters<typeof testSetup.mockInput.pressArrow>
 		) => {
-			act(() => testSetup.mockInput.pressArrow(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressArrow(...args));
+			});
 		},
 		pressEnter: (
 			...args: Parameters<typeof testSetup.mockInput.pressEnter>
 		) => {
-			act(() => testSetup.mockInput.pressEnter(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressEnter(...args));
+			});
 		},
 		pressEscape: (
 			...args: Parameters<typeof testSetup.mockInput.pressEscape>
 		) => {
-			act(() => testSetup.mockInput.pressEscape(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressEscape(...args));
+			});
 		},
 		pressTab: (...args: Parameters<typeof testSetup.mockInput.pressTab>) => {
-			act(() => testSetup.mockInput.pressTab(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressTab(...args));
+			});
 		},
 		pressBackspace: (
 			...args: Parameters<typeof testSetup.mockInput.pressBackspace>
 		) => {
-			act(() => testSetup.mockInput.pressBackspace(...args));
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressBackspace(...args));
+			});
 		},
 		pressCtrlC: () => {
-			act(() => testSetup.mockInput.pressCtrlC());
+			withActEnvironmentSync(() => {
+				act(() => testSetup.mockInput.pressCtrlC());
+			});
 		},
 		typeText: async (
 			...args: Parameters<typeof testSetup.mockInput.typeText>
 		) => {
-			await act(() => testSetup.mockInput.typeText(...args));
+			await withActEnvironment(async () => {
+				await act(() => testSetup.mockInput.typeText(...args));
+			});
+		},
+	};
+
+	const wrappedMockMouse: MockMouse = {
+		...testSetup.mockMouse,
+		click: async (...args: Parameters<typeof testSetup.mockMouse.click>) => {
+			await withActEnvironment(async () => {
+				await act(async () => {
+					await testSetup.mockMouse.click(...args);
+				});
+			});
+		},
+		scroll: async (...args: Parameters<typeof testSetup.mockMouse.scroll>) => {
+			await withActEnvironment(async () => {
+				await act(async () => {
+					await testSetup.mockMouse.scroll(...args);
+				});
+			});
+		},
+		moveTo: async (...args: Parameters<typeof testSetup.mockMouse.moveTo>) => {
+			await withActEnvironment(async () => {
+				await act(async () => {
+					await testSetup.mockMouse.moveTo(...args);
+				});
+			});
 		},
 	};
 
 	const wrappedRenderOnce = async () => {
-		// Flush any pending React state updates (e.g., from processManager subscribers)
-		await act(async () => {});
-		await act(() => testSetup.renderOnce());
+		await withActEnvironment(async () => {
+			// Flush any pending React state updates (e.g., from processManager subscribers)
+			await act(async () => {});
+			await act(async () => {
+				await testSetup.renderOnce();
+			});
+			await act(async () => {});
+		});
 	};
 
 	return {
 		renderer: testSetup.renderer,
 		mockInput: wrappedMockInput,
-		mockMouse: testSetup.mockMouse,
+		mockMouse: wrappedMockMouse,
 		renderOnce: wrappedRenderOnce,
 		captureFrame: testSetup.captureCharFrame,
 		resize: testSetup.resize,
@@ -170,8 +252,11 @@ export async function waitFor(
 ): Promise<void> {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
-		if (await predicate()) return;
-		await new Promise((r) => setTimeout(r, intervalMs));
+		const satisfied = await withActEnvironment(
+			async () => await act(async () => await predicate()),
+		);
+		if (satisfied) return;
+		await sleepWithAct(intervalMs);
 	}
 	throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }

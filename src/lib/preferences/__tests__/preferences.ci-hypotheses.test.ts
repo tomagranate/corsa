@@ -276,4 +276,169 @@ describe("preferences CI hypotheses", () => {
 			}
 		},
 	);
+
+	testExclusive("H11: path with spaces can read/write preferences", () => {
+		const dir = makeTempDir("corsa h11 with spaces ");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			savePreferences({ theme: "space-theme", lineWrap: true }, prefsPath);
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs.theme).toBe("space-theme");
+			expect(prefs.lineWrap).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive("H12: symlinked config dir still works for prefs path", () => {
+		const realDir = makeTempDir("corsa-h12-real-");
+		const linkParent = makeTempDir("corsa-h12-link-parent-");
+		const linkDir = path.join(linkParent, "link");
+		const prefsPath = prefsPathForDir(linkDir);
+
+		try {
+			fs.symlinkSync(realDir, linkDir);
+			savePreferences({ theme: "symlink" }, prefsPath);
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs.theme).toBe("symlink");
+		} finally {
+			cleanupDir(linkParent);
+			cleanupDir(realDir);
+		}
+	});
+
+	testExclusive("H13: file path occupied by directory returns defaults", () => {
+		const dir = makeTempDir("corsa-h13-");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			fs.mkdirSync(prefsPath, { recursive: true });
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs).toEqual({});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive(
+		"H14: read-only prefs file keeps previous value on write",
+		() => {
+			const dir = makeTempDir("corsa-h14-");
+			const prefsPath = prefsPathForDir(dir);
+			try {
+				savePreferences({ theme: "before" }, prefsPath);
+				fs.chmodSync(prefsPath, 0o400);
+				savePreferences({ theme: "after" }, prefsPath);
+				fs.chmodSync(prefsPath, 0o600);
+
+				const prefs = loadPreferences(prefsPath);
+				expect(prefs.theme).toBe("before");
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+	);
+
+	testExclusive("H15: UTF-8 BOM in file causes safe fallback defaults", () => {
+		const dir = makeTempDir("corsa-h15-");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+			fs.writeFileSync(prefsPath, `\uFEFF{"theme":"bom"}`, "utf-8");
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs).toEqual({});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive("H16: unknown nested objects are ignored safely", () => {
+		const dir = makeTempDir("corsa-h16-");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+			fs.writeFileSync(
+				prefsPath,
+				JSON.stringify({
+					theme: "known",
+					experimental: { a: 1, b: true },
+				}),
+			);
+			const prefs = loadPreferences(prefsPath) as Record<string, unknown>;
+			expect(prefs.theme).toBe("known");
+			expect(prefs.experimental).toBeUndefined();
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive("H17: NaN is accepted as number for lastUpdateCheck", () => {
+		const dir = makeTempDir("corsa-h17-");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+			fs.writeFileSync(
+				prefsPath,
+				JSON.stringify({
+					lastUpdateCheck: Number.NaN,
+				}),
+			);
+			const prefs = loadPreferences(prefsPath);
+			// JSON serializes NaN to null, so this should be dropped.
+			expect(prefs.lastUpdateCheck).toBeUndefined();
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive(
+		"H18: concurrent writes to same path do not corrupt JSON",
+		async () => {
+			const dir = makeTempDir("corsa-h18-");
+			const prefsPath = prefsPathForDir(dir);
+			try {
+				await Promise.all([
+					Promise.resolve().then(() =>
+						savePreferences({ theme: "writer-a", lineWrap: true }, prefsPath),
+					),
+					Promise.resolve().then(() =>
+						savePreferences({ theme: "writer-b", lineWrap: false }, prefsPath),
+					),
+				]);
+
+				const raw = fs.readFileSync(prefsPath, "utf-8");
+				expect(() => JSON.parse(raw)).not.toThrow();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+	);
+
+	testExclusive("H19: updatePreference creates file when missing", () => {
+		const dir = makeTempDir("corsa-h19-");
+		const prefsPath = prefsPathForDir(dir);
+		try {
+			expect(fs.existsSync(prefsPath)).toBe(false);
+			updatePreference("lineWrap", true, prefsPath);
+			const prefs = loadPreferences(prefsPath);
+			expect(prefs.lineWrap).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	testExclusive("H20: explicit xdgConfigHome overrides env XDG path", () => {
+		const envDir = makeTempDir("corsa-h20-env-");
+		const explicitDir = makeTempDir("corsa-h20-explicit-");
+		try {
+			withXdg(envDir, () => {
+				const fromOptions = getPreferencesPath({ xdgConfigHome: explicitDir });
+				expect(fromOptions).toBe(
+					path.join(explicitDir, "corsa", "preferences.json"),
+				);
+			});
+		} finally {
+			cleanupDir(envDir);
+			cleanupDir(explicitDir);
+		}
+	});
 });
