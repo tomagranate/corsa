@@ -6,7 +6,11 @@
 import { EventEmitter } from "node:events";
 import { getVersion } from "../../cli";
 import { GITHUB_REPO, getLatestVersion } from "../../commands/update";
-import { loadPreferences, savePreferences } from "../preferences";
+import {
+	loadPreferences as loadPreferencesDefault,
+	type Preferences,
+	savePreferences as savePreferencesDefault,
+} from "../preferences";
 
 /** 4 hours in milliseconds */
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -24,7 +28,25 @@ export interface UpdateState {
 
 type UpdateListener = (state: UpdateState) => void;
 
+interface UpdateCheckerDeps {
+	getVersion: () => string;
+	getLatestVersion: () => Promise<string>;
+	loadPreferences: () => Preferences;
+	savePreferences: (preferences: Preferences) => void;
+	githubRepo: string;
+}
+
+const defaultDeps: UpdateCheckerDeps = {
+	getVersion,
+	getLatestVersion,
+	loadPreferences: loadPreferencesDefault,
+	savePreferences: savePreferencesDefault,
+	githubRepo: GITHUB_REPO,
+};
+
 class UpdateChecker extends EventEmitter {
+	private readonly deps: UpdateCheckerDeps;
+
 	private state: UpdateState = {
 		latestVersion: null,
 		isUpdateAvailable: false,
@@ -32,8 +54,9 @@ class UpdateChecker extends EventEmitter {
 		isChecking: false,
 	};
 
-	constructor() {
+	constructor(deps: UpdateCheckerDeps = defaultDeps) {
 		super();
+		this.deps = deps;
 		// Load cached state from preferences
 		this.loadCachedState();
 	}
@@ -42,9 +65,9 @@ class UpdateChecker extends EventEmitter {
 	 * Load cached update state from preferences
 	 */
 	private loadCachedState(): void {
-		const prefs = loadPreferences();
+		const prefs = this.deps.loadPreferences();
 		if (prefs.latestKnownVersion && prefs.lastUpdateCheck) {
-			const currentVersion = getVersion();
+			const currentVersion = this.deps.getVersion();
 			this.state = {
 				latestVersion: prefs.latestKnownVersion,
 				isUpdateAvailable: this.compareVersions(
@@ -107,8 +130,8 @@ class UpdateChecker extends EventEmitter {
 		this.emit("change", this.getState());
 
 		try {
-			const latestVersion = await getLatestVersion();
-			const currentVersion = getVersion();
+			const latestVersion = await this.deps.getLatestVersion();
+			const currentVersion = this.deps.getVersion();
 			const isUpdateAvailable = this.compareVersions(
 				latestVersion,
 				currentVersion,
@@ -122,10 +145,10 @@ class UpdateChecker extends EventEmitter {
 			};
 
 			// Save to preferences for persistence
-			const prefs = loadPreferences();
+			const prefs = this.deps.loadPreferences();
 			prefs.latestKnownVersion = latestVersion;
 			prefs.lastUpdateCheck = Date.now();
-			savePreferences(prefs);
+			this.deps.savePreferences(prefs);
 		} catch {
 			// Silently fail - update checking is not critical
 			this.state.isChecking = false;
@@ -146,15 +169,24 @@ class UpdateChecker extends EventEmitter {
 	 * Get the GitHub repo URL
 	 */
 	getRepoUrl(): string {
-		return `https://github.com/${GITHUB_REPO}`;
+		return `https://github.com/${this.deps.githubRepo}`;
 	}
 
 	/**
 	 * Get the issues URL
 	 */
 	getIssuesUrl(): string {
-		return `https://github.com/${GITHUB_REPO}/issues`;
+		return `https://github.com/${this.deps.githubRepo}/issues`;
 	}
+}
+
+export function createUpdateCheckerForTests(
+	overrides: Partial<UpdateCheckerDeps> = {},
+): UpdateChecker {
+	return new UpdateChecker({
+		...defaultDeps,
+		...overrides,
+	});
 }
 
 // Global singleton instance

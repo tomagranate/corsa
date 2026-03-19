@@ -1,35 +1,17 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type { UpdateState } from "../update-checker";
+import type { Preferences } from "../../preferences";
+import {
+	createUpdateCheckerForTests,
+	type UpdateState,
+} from "../update-checker";
 
-// ---------------------------------------------------------------------------
-// Mutable test state — changed between tests to control mock behaviour
-// ---------------------------------------------------------------------------
 let currentVersion = "1.0.0";
 const mockGetLatestVersion = mock(() => Promise.resolve("2.0.0"));
 let mockPrefsData: Record<string, unknown> = {};
-const mockSavePreferences = mock((_prefs: Record<string, unknown>) => {});
-
-// ---------------------------------------------------------------------------
-// Module mocks — must appear before the import of the module under test.
-// Bun hoists mock.module above imports so the singleton constructor
-// sees the mocked dependencies.
-// ---------------------------------------------------------------------------
-mock.module("../../../cli", () => ({
-	getVersion: () => currentVersion,
-}));
-
-mock.module("../../../commands/update", () => ({
-	GITHUB_REPO: "tomagranate/corsa",
-	getLatestVersion: mockGetLatestVersion,
-}));
-
-mock.module("../../preferences", () => ({
-	loadPreferences: () => ({ ...mockPrefsData }),
-	savePreferences: mockSavePreferences,
-}));
-
-// Import singleton AFTER mocks are in place
-import { updateChecker } from "../update-checker";
+const mockSavePreferences = mock((prefs: Preferences) => {
+	mockPrefsData = { ...prefs };
+});
+let updateChecker = createUpdateCheckerForTests();
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -40,7 +22,17 @@ beforeEach(() => {
 	mockGetLatestVersion.mockReset();
 	mockGetLatestVersion.mockImplementation(() => Promise.resolve("2.0.0"));
 	mockSavePreferences.mockReset();
+	mockSavePreferences.mockImplementation((prefs: Preferences) => {
+		mockPrefsData = { ...prefs };
+	});
 	mockPrefsData = {};
+	updateChecker = createUpdateCheckerForTests({
+		getVersion: () => currentVersion,
+		getLatestVersion: mockGetLatestVersion,
+		loadPreferences: () => ({ ...mockPrefsData }),
+		savePreferences: mockSavePreferences,
+		githubRepo: "tomagranate/corsa",
+	});
 });
 
 describe("UpdateChecker", () => {
