@@ -1,29 +1,96 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseToml } from "@iarna/toml";
-import type {
-	ASCIIFontName,
-	Config,
-	HomeConfig,
-	McpConfig,
-	ProcessConfig,
-} from "./types";
+import { z } from "zod";
+import {
+	ASCII_FONT_NAMES,
+	homeConfigSchema,
+	mcpConfigSchema,
+	processesConfigSchema,
+	toolConfigSchema,
+	uiConfigSchema,
+} from "./schema";
+import type { Config, HomeConfig, McpConfig, ProcessConfig } from "./types";
 
-/** Valid ASCII font names for home tab title */
-const VALID_FONTS: ASCIIFontName[] = [
-	"tiny",
-	"block",
-	"shade",
-	"slick",
-	"huge",
-	"grid",
-	"pallet",
-];
+const toolRequiredSchema = z
+	.object({
+		name: toolConfigSchema.shape.name,
+		command: toolConfigSchema.shape.command,
+	})
+	.passthrough();
 
-/** Valid sidebar positions */
-const VALID_SIDEBAR_POSITIONS = ["left", "right"] as const;
+function warnUnknownOptions(
+	section: string,
+	raw: Record<string, unknown>,
+	knownKeys: readonly string[],
+	warnings: string[],
+): void {
+	for (const key of Object.keys(raw)) {
+		if (!knownKeys.includes(key)) {
+			warnings.push(`[${section}] Unknown option '${key}' - ignoring`);
+		}
+	}
+}
 
-/** Valid horizontal tab positions */
-const VALID_HORIZONTAL_TAB_POSITIONS = ["top", "bottom"] as const;
+function parseOptional<T>(
+	value: unknown,
+	schema: z.ZodType<T>,
+	assign: (parsed: T) => void,
+	warnings: string[],
+	invalidMessage: string,
+): void {
+	if (value === undefined) return;
+	const parsed = schema.safeParse(value);
+	if (parsed.success) {
+		assign(parsed.data);
+		return;
+	}
+	warnings.push(invalidMessage);
+}
+
+function parseOptionalStringEnum<T extends string>(
+	value: unknown,
+	schema: z.ZodType<T>,
+	assign: (parsed: T) => void,
+	warnings: string[],
+	nonStringMessage: string,
+	invalidEnumMessage: string,
+): void {
+	if (value === undefined) return;
+	const stringParsed = z.string().safeParse(value);
+	if (!stringParsed.success) {
+		warnings.push(nonStringMessage);
+		return;
+	}
+	const enumParsed = schema.safeParse(value);
+	if (enumParsed.success) {
+		assign(enumParsed.data);
+		return;
+	}
+	warnings.push(invalidEnumMessage);
+}
+
+function parseOptionalWithPrimaryAndConstraint<T>(
+	value: unknown,
+	primarySchema: z.ZodType<T>,
+	constraintSchema: z.ZodType<T>,
+	assign: (parsed: T) => void,
+	warnings: string[],
+	primaryInvalidMessage: string,
+	constraintInvalidMessage: string,
+): void {
+	if (value === undefined) return;
+	const primaryParsed = primarySchema.safeParse(value);
+	if (!primaryParsed.success) {
+		warnings.push(primaryInvalidMessage);
+		return;
+	}
+	const constraintParsed = constraintSchema.safeParse(value);
+	if (constraintParsed.success) {
+		assign(constraintParsed.data);
+		return;
+	}
+	warnings.push(constraintInvalidMessage);
+}
 
 /** Result of loading config - includes parsed config and any validation warnings */
 export interface LoadConfigResult {
@@ -51,10 +118,10 @@ export async function loadConfig(
 			throw new Error("Config must have a 'tools' array");
 		}
 
-		const rawTools = rawConfig.tools as Array<Record<string, unknown>>;
+		const rawTools = rawConfig.tools as unknown[];
 		for (let i = 0; i < rawTools.length; i++) {
 			const tool = rawTools[i];
-			if (!tool?.name || !tool?.command) {
+			if (!toolRequiredSchema.safeParse(tool).success) {
 				throw new Error(
 					`Tool at index ${i} must have 'name' and 'command' fields`,
 				);
@@ -87,7 +154,7 @@ export async function loadConfig(
 
 		// Build the validated config
 		const config: Config = {
-			tools: rawTools as unknown as Config["tools"],
+			tools: rawTools as Config["tools"],
 			...(homeConfig && { home: homeConfig }),
 			...(mcpConfig && { mcp: mcpConfig }),
 			...(processesConfig && { processes: processesConfig }),
@@ -118,7 +185,7 @@ export async function loadConfig(
  * Validate home config section, collecting warnings for invalid values
  */
 /** Known keys for home config section */
-const HOME_CONFIG_KEYS = ["enabled", "title", "titleFont", "titleAlign"];
+const HOME_CONFIG_KEYS: readonly string[] = homeConfigSchema.keyof().options;
 
 function validateHomeConfig(
 	raw: Record<string, unknown> | undefined,
@@ -126,64 +193,57 @@ function validateHomeConfig(
 ): HomeConfig | undefined {
 	if (!raw) return undefined;
 
-	// Warn about unknown keys
-	for (const key of Object.keys(raw)) {
-		if (!HOME_CONFIG_KEYS.includes(key)) {
-			warnings.push(`[home] Unknown option '${key}' - ignoring`);
-		}
-	}
+	warnUnknownOptions("home", raw, HOME_CONFIG_KEYS, warnings);
 
 	const result: HomeConfig = {};
 
-	if (typeof raw.enabled === "boolean") {
-		result.enabled = raw.enabled;
-	} else if (raw.enabled !== undefined) {
-		warnings.push(
-			`[home] 'enabled' must be a boolean, got ${typeof raw.enabled}. Using default: false`,
-		);
-	}
+	parseOptional(
+		raw.enabled,
+		homeConfigSchema.shape.enabled,
+		(value) => {
+			result.enabled = value;
+		},
+		warnings,
+		`[home] 'enabled' must be a boolean, got ${typeof raw.enabled}. Using default: false`,
+	);
 
-	if (typeof raw.title === "string") {
-		result.title = raw.title;
-	} else if (raw.title !== undefined) {
-		warnings.push(
-			`[home] 'title' must be a string, got ${typeof raw.title}. Using default: "Home"`,
-		);
-	}
+	parseOptional(
+		raw.title,
+		homeConfigSchema.shape.title,
+		(value) => {
+			result.title = value;
+		},
+		warnings,
+		`[home] 'title' must be a string, got ${typeof raw.title}. Using default: "Home"`,
+	);
 
-	if (typeof raw.titleFont === "string") {
-		if (VALID_FONTS.includes(raw.titleFont as ASCIIFontName)) {
-			result.titleFont = raw.titleFont as ASCIIFontName;
-		} else {
-			warnings.push(
-				`[home] 'titleFont' must be one of: ${VALID_FONTS.join(", ")}. Got "${raw.titleFont}". Using default: "tiny"`,
-			);
-		}
-	} else if (raw.titleFont !== undefined) {
-		warnings.push(
-			`[home] 'titleFont' must be a string, got ${typeof raw.titleFont}. Using default: "tiny"`,
-		);
-	}
+	parseOptionalStringEnum(
+		raw.titleFont,
+		homeConfigSchema.shape.titleFont.unwrap(),
+		(value) => {
+			result.titleFont = value;
+		},
+		warnings,
+		`[home] 'titleFont' must be a string, got ${typeof raw.titleFont}. Using default: "tiny"`,
+		`[home] 'titleFont' must be one of: ${ASCII_FONT_NAMES.join(", ")}. Got "${raw.titleFont}". Using default: "tiny"`,
+	);
 
-	if (typeof raw.titleAlign === "string") {
-		if (raw.titleAlign === "left" || raw.titleAlign === "center") {
-			result.titleAlign = raw.titleAlign;
-		} else {
-			warnings.push(
-				`[home] 'titleAlign' must be "left" or "center". Got "${raw.titleAlign}". Using default: "left"`,
-			);
-		}
-	} else if (raw.titleAlign !== undefined) {
-		warnings.push(
-			`[home] 'titleAlign' must be a string, got ${typeof raw.titleAlign}. Using default: "left"`,
-		);
-	}
+	parseOptionalStringEnum(
+		raw.titleAlign,
+		homeConfigSchema.shape.titleAlign.unwrap(),
+		(value) => {
+			result.titleAlign = value;
+		},
+		warnings,
+		`[home] 'titleAlign' must be a string, got ${typeof raw.titleAlign}. Using default: "left"`,
+		`[home] 'titleAlign' must be "left" or "center". Got "${raw.titleAlign}". Using default: "left"`,
+	);
 
 	return result;
 }
 
 /** Known keys for mcp config section */
-const MCP_CONFIG_KEYS = ["enabled", "port"];
+const MCP_CONFIG_KEYS: readonly string[] = mcpConfigSchema.keyof().options;
 
 /**
  * Validate mcp config section, collecting warnings for invalid values
@@ -194,42 +254,38 @@ function validateMcpConfig(
 ): McpConfig | undefined {
 	if (!raw) return undefined;
 
-	// Warn about unknown keys
-	for (const key of Object.keys(raw)) {
-		if (!MCP_CONFIG_KEYS.includes(key)) {
-			warnings.push(`[mcp] Unknown option '${key}' - ignoring`);
-		}
-	}
+	warnUnknownOptions("mcp", raw, MCP_CONFIG_KEYS, warnings);
 
 	const result: McpConfig = {};
 
-	if (typeof raw.enabled === "boolean") {
-		result.enabled = raw.enabled;
-	} else if (raw.enabled !== undefined) {
-		warnings.push(
-			`[mcp] 'enabled' must be a boolean, got ${typeof raw.enabled}. Using default: false`,
-		);
-	}
+	parseOptional(
+		raw.enabled,
+		mcpConfigSchema.shape.enabled,
+		(value) => {
+			result.enabled = value;
+		},
+		warnings,
+		`[mcp] 'enabled' must be a boolean, got ${typeof raw.enabled}. Using default: false`,
+	);
 
-	if (typeof raw.port === "number" && Number.isInteger(raw.port)) {
-		if (raw.port > 0 && raw.port <= 65535) {
-			result.port = raw.port;
-		} else {
-			warnings.push(
-				`[mcp] 'port' must be between 1 and 65535, got ${raw.port}. Using default: 18765`,
-			);
-		}
-	} else if (raw.port !== undefined) {
-		warnings.push(
-			`[mcp] 'port' must be an integer, got ${typeof raw.port}. Using default: 18765`,
-		);
-	}
+	parseOptionalWithPrimaryAndConstraint(
+		raw.port,
+		z.number().int(),
+		mcpConfigSchema.shape.port,
+		(value) => {
+			result.port = value;
+		},
+		warnings,
+		`[mcp] 'port' must be an integer, got ${typeof raw.port}. Using default: 18765`,
+		`[mcp] 'port' must be between 1 and 65535, got ${raw.port}. Using default: 18765`,
+	);
 
 	return result;
 }
 
 /** Known keys for processes config section */
-const PROCESS_CONFIG_KEYS = ["cleanupOrphans"];
+const PROCESS_CONFIG_KEYS: readonly string[] =
+	processesConfigSchema.keyof().options;
 
 /**
  * Validate processes config section, collecting warnings for invalid values
@@ -240,36 +296,25 @@ function validateProcessConfig(
 ): ProcessConfig | undefined {
 	if (!raw) return undefined;
 
-	// Warn about unknown keys
-	for (const key of Object.keys(raw)) {
-		if (!PROCESS_CONFIG_KEYS.includes(key)) {
-			warnings.push(`[processes] Unknown option '${key}' - ignoring`);
-		}
-	}
+	warnUnknownOptions("processes", raw, PROCESS_CONFIG_KEYS, warnings);
 
 	const result: ProcessConfig = {};
 
-	if (typeof raw.cleanupOrphans === "boolean") {
-		result.cleanupOrphans = raw.cleanupOrphans;
-	} else if (raw.cleanupOrphans !== undefined) {
-		warnings.push(
-			`[processes] 'cleanupOrphans' must be a boolean, got ${typeof raw.cleanupOrphans}. Using default: true`,
-		);
-	}
+	parseOptional(
+		raw.cleanupOrphans,
+		processesConfigSchema.shape.cleanupOrphans,
+		(value) => {
+			result.cleanupOrphans = value;
+		},
+		warnings,
+		`[processes] 'cleanupOrphans' must be a boolean, got ${typeof raw.cleanupOrphans}. Using default: true`,
+	);
 
 	return result;
 }
 
 /** Known keys for ui config section */
-const UI_CONFIG_KEYS = [
-	"sidebarPosition",
-	"horizontalTabPosition",
-	"widthThreshold",
-	"theme",
-	"maxLogLines",
-	"showTabNumbers",
-	"showLineNumbers",
-];
+const UI_CONFIG_KEYS: readonly string[] = uiConfigSchema.keyof().options;
 
 /**
  * Validate ui config section, collecting warnings for invalid values
@@ -280,117 +325,86 @@ function validateUiConfig(
 ): Config["ui"] | undefined {
 	if (!raw) return undefined;
 
-	// Warn about unknown keys
-	for (const key of Object.keys(raw)) {
-		if (!UI_CONFIG_KEYS.includes(key)) {
-			warnings.push(`[ui] Unknown option '${key}' - ignoring`);
-		}
-	}
+	warnUnknownOptions("ui", raw, UI_CONFIG_KEYS, warnings);
 
 	const result: NonNullable<Config["ui"]> = {};
 
-	// sidebarPosition
-	if (typeof raw.sidebarPosition === "string") {
-		if (
-			VALID_SIDEBAR_POSITIONS.includes(
-				raw.sidebarPosition as (typeof VALID_SIDEBAR_POSITIONS)[number],
-			)
-		) {
-			result.sidebarPosition =
-				raw.sidebarPosition as (typeof VALID_SIDEBAR_POSITIONS)[number];
-		} else {
-			warnings.push(
-				`[ui] 'sidebarPosition' must be "left" or "right", got "${raw.sidebarPosition}". Using default: "left"`,
-			);
-		}
-	} else if (raw.sidebarPosition !== undefined) {
-		warnings.push(
-			`[ui] 'sidebarPosition' must be a string, got ${typeof raw.sidebarPosition}. Using default: "left"`,
-		);
-	}
+	parseOptionalStringEnum(
+		raw.sidebarPosition,
+		uiConfigSchema.shape.sidebarPosition.unwrap(),
+		(value) => {
+			result.sidebarPosition = value;
+		},
+		warnings,
+		`[ui] 'sidebarPosition' must be a string, got ${typeof raw.sidebarPosition}. Using default: "left"`,
+		`[ui] 'sidebarPosition' must be "left" or "right", got "${raw.sidebarPosition}". Using default: "left"`,
+	);
 
-	// horizontalTabPosition
-	if (typeof raw.horizontalTabPosition === "string") {
-		if (
-			VALID_HORIZONTAL_TAB_POSITIONS.includes(
-				raw.horizontalTabPosition as (typeof VALID_HORIZONTAL_TAB_POSITIONS)[number],
-			)
-		) {
-			result.horizontalTabPosition =
-				raw.horizontalTabPosition as (typeof VALID_HORIZONTAL_TAB_POSITIONS)[number];
-		} else {
-			warnings.push(
-				`[ui] 'horizontalTabPosition' must be "top" or "bottom", got "${raw.horizontalTabPosition}". Using default: "top"`,
-			);
-		}
-	} else if (raw.horizontalTabPosition !== undefined) {
-		warnings.push(
-			`[ui] 'horizontalTabPosition' must be a string, got ${typeof raw.horizontalTabPosition}. Using default: "top"`,
-		);
-	}
+	parseOptionalStringEnum(
+		raw.horizontalTabPosition,
+		uiConfigSchema.shape.horizontalTabPosition.unwrap(),
+		(value) => {
+			result.horizontalTabPosition = value;
+		},
+		warnings,
+		`[ui] 'horizontalTabPosition' must be a string, got ${typeof raw.horizontalTabPosition}. Using default: "top"`,
+		`[ui] 'horizontalTabPosition' must be "top" or "bottom", got "${raw.horizontalTabPosition}". Using default: "top"`,
+	);
 
-	// widthThreshold
-	if (typeof raw.widthThreshold === "number") {
-		if (raw.widthThreshold > 0) {
-			result.widthThreshold = raw.widthThreshold;
-		} else {
-			warnings.push(
-				`[ui] 'widthThreshold' must be positive, got ${raw.widthThreshold}. Using default: 100`,
-			);
-		}
-	} else if (raw.widthThreshold !== undefined) {
-		warnings.push(
-			`[ui] 'widthThreshold' must be a number, got ${typeof raw.widthThreshold}. Using default: 100`,
-		);
-	}
+	parseOptionalWithPrimaryAndConstraint(
+		raw.widthThreshold,
+		z.number(),
+		uiConfigSchema.shape.widthThreshold,
+		(value) => {
+			result.widthThreshold = value;
+		},
+		warnings,
+		`[ui] 'widthThreshold' must be a number, got ${typeof raw.widthThreshold}. Using default: 100`,
+		`[ui] 'widthThreshold' must be positive, got ${raw.widthThreshold}. Using default: 100`,
+	);
 
 	// theme (string, any value accepted - validation happens at render time)
-	if (typeof raw.theme === "string") {
-		result.theme = raw.theme;
-	} else if (raw.theme !== undefined) {
-		warnings.push(
-			`[ui] 'theme' must be a string, got ${typeof raw.theme}. Using default: "default"`,
-		);
-	}
+	parseOptional(
+		raw.theme,
+		uiConfigSchema.shape.theme,
+		(value) => {
+			result.theme = value;
+		},
+		warnings,
+		`[ui] 'theme' must be a string, got ${typeof raw.theme}. Using default: "default"`,
+	);
 
-	// maxLogLines
-	if (
-		typeof raw.maxLogLines === "number" &&
-		Number.isInteger(raw.maxLogLines)
-	) {
-		if (raw.maxLogLines > 0) {
-			result.maxLogLines = raw.maxLogLines;
-		} else {
-			warnings.push(
-				`[ui] 'maxLogLines' must be positive, got ${raw.maxLogLines}. Using default: 10000`,
-			);
-		}
-	} else if (raw.maxLogLines !== undefined) {
-		warnings.push(
-			`[ui] 'maxLogLines' must be an integer, got ${typeof raw.maxLogLines}. Using default: 10000`,
-		);
-	}
+	parseOptionalWithPrimaryAndConstraint(
+		raw.maxLogLines,
+		z.number().int(),
+		uiConfigSchema.shape.maxLogLines,
+		(value) => {
+			result.maxLogLines = value;
+		},
+		warnings,
+		`[ui] 'maxLogLines' must be an integer, got ${typeof raw.maxLogLines}. Using default: 10000`,
+		`[ui] 'maxLogLines' must be positive, got ${raw.maxLogLines}. Using default: 10000`,
+	);
 
-	// showTabNumbers
-	if (typeof raw.showTabNumbers === "boolean") {
-		result.showTabNumbers = raw.showTabNumbers;
-	} else if (raw.showTabNumbers !== undefined) {
-		warnings.push(
-			`[ui] 'showTabNumbers' must be a boolean, got ${typeof raw.showTabNumbers}. Using default: false`,
-		);
-	}
+	parseOptional(
+		raw.showTabNumbers,
+		uiConfigSchema.shape.showTabNumbers,
+		(value) => {
+			result.showTabNumbers = value;
+		},
+		warnings,
+		`[ui] 'showTabNumbers' must be a boolean, got ${typeof raw.showTabNumbers}. Using default: false`,
+	);
 
-	// showLineNumbers
-	if (
-		typeof raw.showLineNumbers === "boolean" ||
-		raw.showLineNumbers === "auto"
-	) {
-		result.showLineNumbers = raw.showLineNumbers;
-	} else if (raw.showLineNumbers !== undefined) {
-		warnings.push(
-			`[ui] 'showLineNumbers' must be true, false, or "auto", got ${typeof raw.showLineNumbers === "string" ? `"${raw.showLineNumbers}"` : typeof raw.showLineNumbers}. Using default: "auto"`,
-		);
-	}
+	parseOptional(
+		raw.showLineNumbers,
+		uiConfigSchema.shape.showLineNumbers,
+		(value) => {
+			result.showLineNumbers = value;
+		},
+		warnings,
+		`[ui] 'showLineNumbers' must be true, false, or "auto", got ${typeof raw.showLineNumbers === "string" ? `"${raw.showLineNumbers}"` : typeof raw.showLineNumbers}. Using default: "auto"`,
+	);
 
 	return result;
 }

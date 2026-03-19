@@ -1,3 +1,4 @@
+#:schema https://raw.githubusercontent.com/tomagranate/corsa/master/schemas/corsa.schema.json
 # corsa Configuration Reference
 # ==============================
 # This file documents ALL available configuration options.

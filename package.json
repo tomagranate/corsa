@@ -8,12 +8,15 @@
 	},
 	"files": [
 		"bin",
-		"scripts"
+		"scripts",
+		"schemas"
 	],
 	"scripts": {
 		"dev": "bun run src/index.tsx",
 		"build": "bun build src/index.tsx --compile --minify --outfile dist/corsa",
 		"build:all": "bun run scripts/build-all.ts",
+		"config-schema:generate": "bun run scripts/generate-config-schema.ts",
+		"config-schema:check": "bun run config-schema:generate && git diff --exit-code -- schemas/corsa.schema.json",
 		"postinstall": "node scripts/postinstall.cjs",
 		"check": "biome check --fix",
 		"check:nofix": "biome check",
