@@ -113,10 +113,10 @@ jobs:
         include:
           - os: darwin
             arch: arm64
-            runner: macos-latest
+            runner: macos-26
           - os: darwin
             arch: x64
-            runner: macos-15-intel
+            runner: macos-26-intel
           - os: linux
             arch: x64
             runner: ubuntu-latest
@@ -151,7 +151,7 @@ jobs:
           shasum -a 256 ${BINARY_NAME}.tar.gz > ${BINARY_NAME}.tar.gz.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: corsa-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -188,7 +188,7 @@ jobs:
           "$hash  corsa-windows-x64.zip" | Out-File -Encoding ascii corsa-windows-x64.zip.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: corsa-windows-x64
           path: |
@@ -206,7 +206,7 @@ jobs:
           ref: ${{ github.event.inputs.tag }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -238,10 +238,11 @@ jobs:
           ref: ${{ github.event.inputs.tag }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -271,7 +272,7 @@ jobs:
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Trigger Homebrew tap update
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           repository: ${{ github.repository_owner }}/homebrew-tap
