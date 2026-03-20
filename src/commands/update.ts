@@ -3,7 +3,12 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { createWriteStream, unlinkSync } from "node:fs";
+import {
+	createWriteStream,
+	existsSync,
+	realpathSync,
+	unlinkSync,
+} from "node:fs";
 import { chmod, rename } from "node:fs/promises";
 import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
@@ -127,13 +132,74 @@ export function detectInstallMethodFromPath(
 	return "unknown";
 }
 
+const RUNTIME_ARGV0_BASENAMES = new Set(["bun", "node", "nodejs", "deno"]);
+
+function argv0IsJsRuntime(argv0: string): boolean {
+	const base = argv0.split(/[/\\]/).pop() ?? "";
+	const name = base.replace(/\.exe$/i, "");
+	return RUNTIME_ARGV0_BASENAMES.has(name);
+}
+
+function normalizeFsPath(p: string): string {
+	return p.replace(/\\/g, "/");
+}
+
+/**
+ * True if a path is (or resolves to) Homebrew's Cellar location for the corsa formula.
+ * Homebrew often runs corsa via `bun`/`node` with a script under Cellar; argv[0] is then the runtime.
+ */
+function pathIsUnderHomebrewCorsaCellar(candidate: string): boolean {
+	const norm = normalizeFsPath(candidate);
+	if (/\/Cellar\/corsa\//i.test(norm)) {
+		return true;
+	}
+	if (/\/\.linuxbrew\/Cellar\/corsa\//i.test(norm)) {
+		return true;
+	}
+	try {
+		if (existsSync(candidate)) {
+			const resolved = normalizeFsPath(realpathSync(candidate));
+			if (/\/Cellar\/corsa\//i.test(resolved)) {
+				return true;
+			}
+			if (/\/\.linuxbrew\/Cellar\/corsa\//i.test(resolved)) {
+				return true;
+			}
+		}
+	} catch {
+		// ignore resolution errors
+	}
+	return false;
+}
+
+function argLooksLikeFilesystemPath(arg: string): boolean {
+	if (!arg || arg.startsWith("-")) {
+		return false;
+	}
+	return arg.includes("/") || arg.includes("\\");
+}
+
+function isHomebrewCorsaInvokedViaRuntime(): boolean {
+	for (const arg of process.argv.slice(1)) {
+		if (!argLooksLikeFilesystemPath(arg)) {
+			continue;
+		}
+		if (pathIsUnderHomebrewCorsaCellar(arg)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * Detect how corsa was installed.
  *
  * Detection strategy:
  * 1. Check CORSA_INSTALL_METHOD env var (set by wrapper script for npm/pnpm/bun/yarn)
- * 2. Check HOMEBREW_PREFIX env var (indicates homebrew environment)
- * 3. Fall back to "direct" (standalone binary install)
+ * 2. If argv[0] is bun/node/deno: Homebrew may still be launching corsa — check argv for Cellar/corsa paths
+ * 3. Same argv[0] case: otherwise treat as development (git clone / bun dev)
+ * 4. Check HOMEBREW_PREFIX for compiled or other brew-linked installs
+ * 5. Fall back to "direct" (standalone binary install)
  *
  * Note: Bun-compiled binaries cannot determine their own filesystem path
  * (process.argv[0] returns "bun" and all import.meta paths return virtual /$bunfs/ paths).
@@ -163,14 +229,13 @@ export function detectInstallMethod(): InstallMethod {
 		}
 	}
 
-	// Check for development mode (running via bun dev, node, etc.)
-	// In dev mode, argv[0] is the runtime (bun, node) not corsa
+	// Running via bun/node/deno: either development (repo) or Homebrew (formula execs runtime + script).
 	const argv0 = process.argv[0];
-	if (argv0) {
-		const basename = argv0.split("/").pop() ?? "";
-		if (["bun", "node", "nodejs", "deno"].includes(basename)) {
-			return "development";
+	if (argv0 && argv0IsJsRuntime(argv0)) {
+		if (isHomebrewCorsaInvokedViaRuntime()) {
+			return "brew";
 		}
+		return "development";
 	}
 
 	// Check for Homebrew install via environment variable

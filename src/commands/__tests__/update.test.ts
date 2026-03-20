@@ -1,9 +1,28 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
 	detectInstallMethod,
 	detectInstallMethodFromPath,
 	type InstallMethod,
 } from "../update";
+
+/**
+ * Reproduces the mis-detection users saw with `which corsa` → `/opt/homebrew/bin/corsa`
+ * while the formula actually runs `bun <entrypoint>`: argv[0] is the runtime, argv[1] is
+ * often the bin symlink (not a string containing "Cellar" until realpath).
+ *
+ * Before the Cellar/realpath argv scan, detectInstallMethod() returned "development" for any
+ * bun/node argv[0], so `corsa update` showed "Running from source".
+ */
+const brewSymlinkTest = process.platform === "win32" ? test.skip : test;
 
 describe("detectInstallMethodFromPath", () => {
 	// Test with checkBrew: false to avoid actual brew checks during tests
@@ -232,20 +251,106 @@ describe("detectInstallMethod", () => {
 	});
 
 	describe("HOMEBREW_PREFIX fallback", () => {
-		test("detects brew when HOMEBREW_PREFIX is set and no CORSA_INSTALL_METHOD", () => {
+		test("detects brew when HOMEBREW_PREFIX is set and argv0 is the corsa binary", () => {
 			delete process.env.CORSA_INSTALL_METHOD;
 			process.env.HOMEBREW_PREFIX = "/opt/homebrew";
-			// Note: in test environment, argv[0] is likely "bun" so development takes priority
-			// This test verifies the logic exists, actual behavior depends on runtime
+			const saved = [...process.argv];
+			process.argv = ["/opt/homebrew/bin/corsa", "update"];
+			try {
+				expect(detectInstallMethod()).toBe("brew");
+			} finally {
+				process.argv.length = 0;
+				process.argv.push(...saved);
+			}
 		});
 	});
 
-	describe("development mode detection", () => {
-		test("detects development when running via bun runtime", () => {
+	describe("Homebrew via runtime (argv[0] is bun/node)", () => {
+		test("detects brew when script path is under Cellar/corsa", () => {
 			delete process.env.CORSA_INSTALL_METHOD;
 			delete process.env.HOMEBREW_PREFIX;
-			// In bun test, argv[0] is "bun", so it should detect as development
-			expect(detectInstallMethod()).toBe("development");
+			const saved = [...process.argv];
+			process.argv = [
+				"/opt/homebrew/opt/bun/bin/bun",
+				"/opt/homebrew/Cellar/corsa/1.0.0/libexec/cli.js",
+				"update",
+			];
+			try {
+				expect(detectInstallMethod()).toBe("brew");
+			} finally {
+				process.argv.length = 0;
+				process.argv.push(...saved);
+			}
+		});
+
+		test("detects brew for Intel Homebrew Cellar path", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			delete process.env.HOMEBREW_PREFIX;
+			const saved = [...process.argv];
+			process.argv = [
+				"/usr/local/bin/node",
+				"/usr/local/Cellar/corsa/2.0.0/libexec/main.js",
+			];
+			try {
+				expect(detectInstallMethod()).toBe("brew");
+			} finally {
+				process.argv.length = 0;
+				process.argv.push(...saved);
+			}
+		});
+
+		brewSymlinkTest(
+			"detects brew when argv[1] is homebrew bin/corsa symlink into Cellar (real install layout)",
+			() => {
+				delete process.env.CORSA_INSTALL_METHOD;
+				delete process.env.HOMEBREW_PREFIX;
+
+				const root = mkdtempSync(join(tmpdir(), "corsa-hbrew-repro-"));
+				const cellarMain = join(
+					root,
+					"opt",
+					"homebrew",
+					"Cellar",
+					"corsa",
+					"1.0.0",
+					"libexec",
+					"main.js",
+				);
+				mkdirSync(join(cellarMain, ".."), { recursive: true });
+				writeFileSync(cellarMain, "");
+
+				const binCorsa = join(root, "opt", "homebrew", "bin", "corsa");
+				mkdirSync(join(binCorsa, ".."), { recursive: true });
+				symlinkSync(
+					join("..", "Cellar", "corsa", "1.0.0", "libexec", "main.js"),
+					binCorsa,
+				);
+
+				const saved = [...process.argv];
+				process.argv = ["/opt/homebrew/opt/bun/bin/bun", binCorsa, "update"];
+				try {
+					expect(detectInstallMethod()).toBe("brew");
+				} finally {
+					process.argv.length = 0;
+					process.argv.push(...saved);
+					rmSync(root, { recursive: true, force: true });
+				}
+			},
+		);
+	});
+
+	describe("development mode detection", () => {
+		test("detects development when running via bun from a repo path (not Cellar)", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			delete process.env.HOMEBREW_PREFIX;
+			const saved = [...process.argv];
+			process.argv = ["/opt/homebrew/bin/bun", "/Users/dev/corsa/src/cli.ts"];
+			try {
+				expect(detectInstallMethod()).toBe("development");
+			} finally {
+				process.argv.length = 0;
+				process.argv.push(...saved);
+			}
 		});
 	});
 });
