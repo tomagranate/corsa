@@ -100,6 +100,17 @@ function detectInstallMethod() {
 		return "npm-local";
 	}
 
+	// Homebrew formula installs this wrapper under Cellar (or opt/corsa); it does not use
+	// node_modules, so without this branch the native binary gets CORSA_INSTALL_METHOD=unknown.
+	const w = wrapperPath.replace(/\\/g, "/");
+	if (
+		/\/Cellar\/corsa\//i.test(w) ||
+		/\.linuxbrew\/Cellar\/corsa\//i.test(w) ||
+		/\/homebrew\/opt\/corsa\//i.test(w)
+	) {
+		return "brew";
+	}
+
 	// Fallback - shouldn't normally reach here via wrapper
 	return "unknown";
 }

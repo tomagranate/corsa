@@ -9,6 +9,7 @@
  */
 
 import { mkdir, readFile } from "node:fs/promises";
+import { platform } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
 
@@ -47,6 +48,14 @@ async function getVersion(): Promise<string> {
 	return packageJson.version;
 }
 
+/** Bun --compile can embed a signature blob macOS rejects; fix only when host is macOS. */
+async function adHocSignDarwinBinary(binaryPath: string): Promise<void> {
+	if (platform() !== "darwin") return;
+	await $`/usr/bin/codesign --remove-signature ${binaryPath}`.quiet().nothrow();
+	await $`/usr/bin/codesign -s - --force --timestamp=none ${binaryPath}`;
+	await $`/usr/bin/codesign -vvv ${binaryPath}`.quiet();
+}
+
 async function buildTarget(target: BuildTarget, outDir: string): Promise<void> {
 	const outputName = `corsa-${target.os}-${target.arch}${target.extension}`;
 	const outputPath = join(outDir, outputName);
@@ -54,6 +63,10 @@ async function buildTarget(target: BuildTarget, outDir: string): Promise<void> {
 	console.log(`Building ${outputName}...`);
 
 	await $`bun build src/index.tsx --compile --minify --target=${target.target} --outfile=${outputPath}`;
+
+	if (target.os === "darwin") {
+		await adHocSignDarwinBinary(outputPath);
+	}
 
 	console.log(`  ✓ ${outputName}`);
 }

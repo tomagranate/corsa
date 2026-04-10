@@ -142,6 +142,18 @@ jobs:
           BINARY_NAME="corsa-${{ matrix.os }}-${{ matrix.arch }}"
           bun build src/index.tsx --compile --minify --outfile=dist/${BINARY_NAME}
 
+      # Bun --compile embeds LC_CODE_SIGNATURE that Apple's codesign rejects; macOS 15+
+      # may SIGKILL the binary before JS runs. Strip and apply a normal ad-hoc signature.
+      - name: Ad-hoc code sign (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          set -euxo pipefail
+          BINARY_NAME="corsa-${{ matrix.os }}-${{ matrix.arch }}"
+          BINARY_PATH="dist/${BINARY_NAME}"
+          /usr/bin/codesign --remove-signature "$BINARY_PATH" || true
+          /usr/bin/codesign -s - --force --timestamp=none "$BINARY_PATH"
+          /usr/bin/codesign -vvv "$BINARY_PATH"
+
       - name: Create archive
         run: |
           cd dist
@@ -199,6 +211,9 @@ jobs:
     name: Create Release
     needs: [build-unix, build-windows]
     runs-on: ubuntu-latest
+    # softprops/action-gh-release@v2 still declares node20; opt into Node 24 until upstream updates.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v6

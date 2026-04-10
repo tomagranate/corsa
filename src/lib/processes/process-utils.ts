@@ -19,16 +19,13 @@ export async function isProcessRunning(pid: number): Promise<boolean> {
  * the child is its own process group leader: Ctrl-C targets the foreground
  * group, not only the parent wrapper (e.g. `zig build run` vs the game binary).
  *
- * Never pass {@link process.pid}: on Unix the supervisor often has PGID === its
- * PID, so `kill(-pid)` would signal that whole group and kill Corsa itself.
- *
  * On Windows, the group kill attempt fails and we only signal the direct PID.
  */
 export function signalProcessGroupOrPid(
 	pid: number,
 	signal: NodeJS.Signals,
 ): boolean {
-	if (pid <= 0 || pid === process.pid) return false;
+	if (pid <= 0) return false;
 
 	try {
 		process.kill(-pid, signal);
@@ -44,22 +41,14 @@ export function signalProcessGroupOrPid(
 }
 
 /**
- * Kill a single process by PID (no process-group broadcast).
- * Used for PID-file orphan cleanup: a stored PID may be reused by Corsa after
- * restart; {@link signalProcessGroupOrPid} must not be used there.
+ * Kill a process by PID (async wrapper for API compatibility).
+ * @see {@link signalProcessGroupOrPid}
  */
 export async function killProcess(
 	pid: number,
 	signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
 ): Promise<boolean> {
-	if (pid <= 0 || pid === process.pid) return false;
-
-	try {
-		process.kill(pid, signal);
-		return true;
-	} catch {
-		return false;
-	}
+	return signalProcessGroupOrPid(pid, signal);
 }
 
 /**
