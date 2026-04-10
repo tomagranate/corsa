@@ -33,9 +33,14 @@ describe("Process utilities", () => {
 		expect(signalProcessGroupOrPid(999999999, "SIGTERM")).toBe(false);
 	});
 
+	test("signalProcessGroupOrPid - refuses supervisor PID (avoid group self-kill)", () => {
+		expect(signalProcessGroupOrPid(process.pid, "SIGTERM")).toBe(false);
+	});
+
 	test("killProcess - invalid PID", async () => {
 		expect(await killProcess(0)).toBe(false);
 		expect(await killProcess(-1)).toBe(false);
+		expect(await killProcess(process.pid, "SIGTERM")).toBe(false);
 	});
 
 	test("killProcess - non-existent PID", async () => {

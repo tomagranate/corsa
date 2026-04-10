@@ -918,6 +918,18 @@ export class ProcessManager {
 
 		const results = await Promise.all(
 			pidData.processes.map(async (entry): Promise<OrphanCleanupResult> => {
+				// Stale PID file + OS PID reuse: entry may equal our own PID while
+				// referring to a long-dead child. Never signal that (group kill
+				// would tear down Corsa).
+				if (entry.pid === process.pid) {
+					return {
+						toolName: entry.toolName,
+						toolIndex: entry.toolIndex,
+						pid: entry.pid,
+						status: "already_dead",
+					};
+				}
+
 				const running = await isProcessRunning(entry.pid);
 				if (!running) {
 					return {
