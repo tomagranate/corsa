@@ -16,6 +16,7 @@ import {
 import {
 	isProcessRunning,
 	killProcess,
+	listDescendantPids,
 	signalDescendantProcesses,
 	signalProcessGroupOrPid,
 } from "./process-utils";
@@ -494,6 +495,23 @@ export class ProcessManager {
 		}
 	}
 
+	/**
+	 * After the supervised root exits (e.g. `zig`), children like `city-sim` may still be
+	 * running with a new parent. PIDs captured before signaling are SIGKILLed if alive.
+	 */
+	private async reapSnapshotIfRunning(snapshot: number[]): Promise<void> {
+		for (const d of snapshot) {
+			if (d <= 0 || !Number.isFinite(d)) continue;
+			if (await isProcessRunning(d)) {
+				try {
+					process.kill(d, "SIGKILL");
+				} catch {
+					// ignore
+				}
+			}
+		}
+	}
+
 	async stopTool(index: number): Promise<void> {
 		const tool = this.tools[index];
 		if (!tool || !tool.process) return;
@@ -501,6 +519,7 @@ export class ProcessManager {
 		const interactive = !!tool.config.interactive;
 		const proc = tool.process;
 		const pid = proc.pid;
+		const descendantSnapshot = !interactive ? listDescendantPids(pid) : [];
 
 		try {
 			if (interactive) {
@@ -522,6 +541,12 @@ export class ProcessManager {
 			const exitPromise = proc.exited;
 
 			await Promise.race([exitPromise, timeout]);
+
+			// Root may be `zig` (exit 143) while the real app is still alive — reap PIDs
+			// we saw before signaling, even if they were reparented off the dead root.
+			if (!interactive) {
+				await this.reapSnapshotIfRunning(descendantSnapshot);
+			}
 
 			// Check if process exited
 			if (tool.process && !tool.process.killed) {
@@ -565,6 +590,7 @@ export class ProcessManager {
 			const interactive = !!tool.config.interactive;
 			const proc = tool.process;
 			const pid = proc.pid;
+			const descendantSnapshot = !interactive ? listDescendantPids(pid) : [];
 			try {
 				if (interactive) {
 					this.closeTerminal(tool);
@@ -586,6 +612,10 @@ export class ProcessManager {
 					}
 					signalProcessGroupOrPid(pid, "SIGKILL");
 					await proc.exited;
+				}
+
+				if (!interactive) {
+					await this.reapSnapshotIfRunning(descendantSnapshot);
 				}
 			} catch (_error) {
 				// Ignore errors during stop
@@ -643,6 +673,9 @@ export class ProcessManager {
 					i,
 					"[SHUTDOWN] Process did not exit gracefully, forcing termination...",
 				);
+				const snap = !tool.config.interactive
+					? listDescendantPids(tool.process.pid)
+					: [];
 				if (!tool.config.interactive) {
 					signalDescendantProcesses(tool.process.pid, "SIGKILL");
 				}
@@ -654,6 +687,9 @@ export class ProcessManager {
 				}
 				tool.process = null;
 				this.notifyChange(i);
+				if (snap.length > 0) {
+					await this.reapSnapshotIfRunning(snap);
+				}
 			}
 		}
 
@@ -790,6 +826,9 @@ export class ProcessManager {
 
 			const tool = this.tools[i];
 			if (tool?.process && !tool.process.killed) {
+				const snap = !tool.config.interactive
+					? listDescendantPids(tool.process.pid)
+					: [];
 				if (!tool.config.interactive) {
 					signalDescendantProcesses(tool.process.pid, "SIGKILL");
 				}
@@ -797,6 +836,9 @@ export class ProcessManager {
 				this.closeTerminal(tool);
 				tool.process = null;
 				tool.status = "stopped";
+				if (snap.length > 0) {
+					await this.reapSnapshotIfRunning(snap);
+				}
 			}
 		}
 
