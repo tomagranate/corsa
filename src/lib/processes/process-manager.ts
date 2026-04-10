@@ -13,7 +13,11 @@ import {
 	removePidFromFile,
 	updatePidFile,
 } from "./pid-file";
-import { isProcessRunning, killProcess } from "./process-utils";
+import {
+	isProcessRunning,
+	killProcess,
+	signalProcessGroupOrPid,
+} from "./process-utils";
 import { VirtualTerminal } from "./virtual-terminal";
 
 /**
@@ -494,6 +498,8 @@ export class ProcessManager {
 		if (!tool || !tool.process) return;
 
 		const interactive = !!tool.config.interactive;
+		const proc = tool.process;
+		const pid = proc.pid;
 
 		try {
 			if (interactive) {
@@ -503,12 +509,12 @@ export class ProcessManager {
 				this.closeTerminal(tool);
 			}
 
-			tool.process.kill(interactive ? "SIGINT" : "SIGTERM");
+			signalProcessGroupOrPid(pid, interactive ? "SIGINT" : "SIGTERM");
 
 			const timeout = new Promise((resolve) =>
 				setTimeout(resolve, GRACEFUL_SHUTDOWN_TIMEOUT),
 			);
-			const exitPromise = tool.process.exited;
+			const exitPromise = proc.exited;
 
 			await Promise.race([exitPromise, timeout]);
 
@@ -552,22 +558,24 @@ export class ProcessManager {
 			(tool.status === "running" || tool.status === "shuttingDown")
 		) {
 			const interactive = !!tool.config.interactive;
+			const proc = tool.process;
+			const pid = proc.pid;
 			try {
 				if (interactive) {
 					this.closeTerminal(tool);
 				}
-				tool.process.kill(interactive ? "SIGINT" : "SIGTERM");
+				signalProcessGroupOrPid(pid, interactive ? "SIGINT" : "SIGTERM");
 				const timeout = new Promise((resolve) =>
 					setTimeout(resolve, GRACEFUL_SHUTDOWN_TIMEOUT),
 				);
-				const exitPromise = tool.process.exited;
+				const exitPromise = proc.exited;
 
 				await Promise.race([exitPromise, timeout]);
 
 				// Force kill if still running after timeout
 				if (tool.process && !tool.process.killed) {
-					tool.process.kill("SIGKILL");
-					await tool.process.exited;
+					signalProcessGroupOrPid(pid, "SIGKILL");
+					await proc.exited;
 				}
 			} catch (_error) {
 				// Ignore errors during stop
@@ -625,7 +633,7 @@ export class ProcessManager {
 					i,
 					"[SHUTDOWN] Process did not exit gracefully, forcing termination...",
 				);
-				tool.process.kill("SIGKILL");
+				signalProcessGroupOrPid(tool.process.pid, "SIGKILL");
 				this.closeTerminal(tool);
 				tool.status = "stopped";
 				if (this.isShuttingDown) {
@@ -682,7 +690,10 @@ export class ProcessManager {
 					if (tool.config.interactive) {
 						this.closeTerminal(tool);
 					}
-					tool.process.kill(tool.config.interactive ? "SIGINT" : "SIGTERM");
+					signalProcessGroupOrPid(
+						tool.process.pid,
+						tool.config.interactive ? "SIGINT" : "SIGTERM",
+					);
 				} catch {
 					// Ignore errors - process may have already exited
 				}
@@ -764,7 +775,7 @@ export class ProcessManager {
 
 			const tool = this.tools[i];
 			if (tool?.process && !tool.process.killed) {
-				tool.process.kill("SIGKILL");
+				signalProcessGroupOrPid(tool.process.pid, "SIGKILL");
 				this.closeTerminal(tool);
 				tool.process = null;
 				tool.status = "stopped";

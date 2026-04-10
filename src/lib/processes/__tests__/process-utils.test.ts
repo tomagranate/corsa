@@ -3,6 +3,7 @@ import {
 	isProcessRunning,
 	killProcess,
 	killProcessGracefully,
+	signalProcessGroupOrPid,
 } from "../process-utils";
 
 describe("Process utilities", () => {
@@ -21,6 +22,15 @@ describe("Process utilities", () => {
 		// Use a very large PID that's unlikely to exist
 		const result = await isProcessRunning(999999999);
 		expect(result).toBe(false);
+	});
+
+	test("signalProcessGroupOrPid - invalid PID", () => {
+		expect(signalProcessGroupOrPid(0, "SIGTERM")).toBe(false);
+		expect(signalProcessGroupOrPid(-1, "SIGTERM")).toBe(false);
+	});
+
+	test("signalProcessGroupOrPid - non-existent PID", () => {
+		expect(signalProcessGroupOrPid(999999999, "SIGTERM")).toBe(false);
 	});
 
 	test("killProcess - invalid PID", async () => {

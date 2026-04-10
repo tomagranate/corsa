@@ -14,32 +14,41 @@ export async function isProcessRunning(pid: number): Promise<boolean> {
 }
 
 /**
- * Kill a process by PID.
- * On Unix, attempts to kill the entire process group first (negative PID),
- * which catches child processes spawned by the target. Falls back to killing
- * the individual PID if the process group kill fails (e.g. the process is
- * not a process group leader).
+ * Send a signal to a process group first (negative PID = PGID on Unix), then
+ * fall back to the single process. This matches TTY job-control behaviour when
+ * the child is its own process group leader: Ctrl-C targets the foreground
+ * group, not only the parent wrapper (e.g. `zig build run` vs the game binary).
+ *
+ * On Windows, the group kill attempt fails and we only signal the direct PID.
  */
-export async function killProcess(
+export function signalProcessGroupOrPid(
 	pid: number,
-	signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
-): Promise<boolean> {
+	signal: NodeJS.Signals,
+): boolean {
 	if (pid <= 0) return false;
 
 	try {
-		// Try process group kill first (negative PID signals all processes
-		// in the group, catching child processes that would otherwise be orphaned)
 		process.kill(-pid, signal);
 		return true;
 	} catch {
 		try {
-			// Fall back to individual PID kill
 			process.kill(pid, signal);
 			return true;
 		} catch {
 			return false;
 		}
 	}
+}
+
+/**
+ * Kill a process by PID (async wrapper for API compatibility).
+ * @see {@link signalProcessGroupOrPid}
+ */
+export async function killProcess(
+	pid: number,
+	signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
+): Promise<boolean> {
+	return signalProcessGroupOrPid(pid, signal);
 }
 
 /**

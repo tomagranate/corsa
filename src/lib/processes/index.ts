@@ -28,4 +28,5 @@ export {
 	isProcessRunning,
 	killProcess,
 	killProcessGracefully,
+	signalProcessGroupOrPid,
 } from "./process-utils";
