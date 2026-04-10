@@ -41,6 +41,75 @@ export function signalProcessGroupOrPid(
 }
 
 /**
+ * Parse `ps` pid/ppid lines into an adjacency list (ppid -> child pids).
+ * @internal Exported for unit tests.
+ */
+export function parsePsPpidAdjacency(lines: string[]): Map<number, number[]> {
+	const childrenByPpid = new Map<number, number[]>();
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		const parts = trimmed.split(/\s+/);
+		if (parts.length < 2) continue;
+		const pid = Number(parts[0]);
+		const ppid = Number(parts[1]);
+		if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+		const list = childrenByPpid.get(ppid) ?? [];
+		list.push(pid);
+		childrenByPpid.set(ppid, list);
+	}
+	return childrenByPpid;
+}
+
+/**
+ * All descendant PIDs of `rootPid` (excluding `rootPid`), depth-first (leaves before ancestors).
+ * Used when the supervised child is a wrapper (e.g. `zig build run`) and the real workload is
+ * a child not in the same process group — `kill(-pid)` then only hits the wrapper.
+ */
+export function listDescendantPids(rootPid: number): number[] {
+	if (rootPid <= 0) return [];
+	if (process.platform === "win32") return [];
+
+	const result = Bun.spawnSync(["ps", "-axo", "pid=,ppid="], {
+		stdout: "pipe",
+		stderr: "ignore",
+	});
+	if (result.exitCode !== 0) return [];
+
+	const text = new TextDecoder().decode(result.stdout);
+	const lines = text.split("\n");
+	const childrenByPpid = parsePsPpidAdjacency(lines);
+
+	const out: number[] = [];
+	const seen = new Set<number>();
+	const walk = (p: number) => {
+		if (seen.has(p)) return;
+		seen.add(p);
+		for (const c of childrenByPpid.get(p) ?? []) {
+			walk(c);
+			out.push(c);
+		}
+	};
+	walk(rootPid);
+	return out;
+}
+
+/** Send `signal` to every descendant of `rootPid` (not including `rootPid`). No-op on Windows. */
+export function signalDescendantProcesses(
+	rootPid: number,
+	signal: NodeJS.Signals,
+): void {
+	if (rootPid <= 0 || process.platform === "win32") return;
+	for (const p of listDescendantPids(rootPid)) {
+		try {
+			process.kill(p, signal);
+		} catch {
+			// ignore
+		}
+	}
+}
+
+/**
  * Kill a process by PID (async wrapper for API compatibility).
  * @see {@link signalProcessGroupOrPid}
  */

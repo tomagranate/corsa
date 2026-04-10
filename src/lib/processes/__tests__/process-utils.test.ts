@@ -3,6 +3,7 @@ import {
 	isProcessRunning,
 	killProcess,
 	killProcessGracefully,
+	parsePsPpidAdjacency,
 	signalProcessGroupOrPid,
 } from "../process-utils";
 
@@ -31,6 +32,18 @@ describe("Process utilities", () => {
 
 	test("signalProcessGroupOrPid - non-existent PID", () => {
 		expect(signalProcessGroupOrPid(999999999, "SIGTERM")).toBe(false);
+	});
+
+	test("parsePsPpidAdjacency - builds child map", () => {
+		const adj = parsePsPpidAdjacency([" 10  1", " 20 10", " 30 10", " 40 20"]);
+		expect(adj.get(1)).toEqual([10]);
+		expect(adj.get(10)?.sort((a, b) => a - b)).toEqual([20, 30]);
+		expect(adj.get(20)).toEqual([40]);
+	});
+
+	test("parsePsPpidAdjacency - skips bad lines", () => {
+		const adj = parsePsPpidAdjacency(["", "not numbers", "  5  2"]);
+		expect(adj.get(2)).toEqual([5]);
 	});
 
 	test("killProcess - invalid PID", async () => {

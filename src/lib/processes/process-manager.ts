@@ -16,6 +16,7 @@ import {
 import {
 	isProcessRunning,
 	killProcess,
+	signalDescendantProcesses,
 	signalProcessGroupOrPid,
 } from "./process-utils";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -507,6 +508,10 @@ export class ProcessManager {
 				// to the child — the natural "terminal disconnected" signal
 				// that TUI apps handle for clean shutdown.
 				this.closeTerminal(tool);
+			} else {
+				// Piped tools (e.g. `zig build run`): workload may be a child not in the
+				// wrapper's process group; signal descendants then the group / root pid.
+				signalDescendantProcesses(pid, "SIGTERM");
 			}
 
 			signalProcessGroupOrPid(pid, interactive ? "SIGINT" : "SIGTERM");
@@ -563,6 +568,8 @@ export class ProcessManager {
 			try {
 				if (interactive) {
 					this.closeTerminal(tool);
+				} else {
+					signalDescendantProcesses(pid, "SIGTERM");
 				}
 				signalProcessGroupOrPid(pid, interactive ? "SIGINT" : "SIGTERM");
 				const timeout = new Promise((resolve) =>
@@ -574,6 +581,9 @@ export class ProcessManager {
 
 				// Force kill if still running after timeout
 				if (tool.process && !tool.process.killed) {
+					if (!interactive) {
+						signalDescendantProcesses(pid, "SIGKILL");
+					}
 					signalProcessGroupOrPid(pid, "SIGKILL");
 					await proc.exited;
 				}
@@ -633,6 +643,9 @@ export class ProcessManager {
 					i,
 					"[SHUTDOWN] Process did not exit gracefully, forcing termination...",
 				);
+				if (!tool.config.interactive) {
+					signalDescendantProcesses(tool.process.pid, "SIGKILL");
+				}
 				signalProcessGroupOrPid(tool.process.pid, "SIGKILL");
 				this.closeTerminal(tool);
 				tool.status = "stopped";
@@ -689,6 +702,8 @@ export class ProcessManager {
 				try {
 					if (tool.config.interactive) {
 						this.closeTerminal(tool);
+					} else {
+						signalDescendantProcesses(tool.process.pid, "SIGTERM");
 					}
 					signalProcessGroupOrPid(
 						tool.process.pid,
@@ -775,6 +790,9 @@ export class ProcessManager {
 
 			const tool = this.tools[i];
 			if (tool?.process && !tool.process.killed) {
+				if (!tool.config.interactive) {
+					signalDescendantProcesses(tool.process.pid, "SIGKILL");
+				}
 				signalProcessGroupOrPid(tool.process.pid, "SIGKILL");
 				this.closeTerminal(tool);
 				tool.process = null;

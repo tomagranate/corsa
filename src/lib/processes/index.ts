@@ -28,5 +28,8 @@ export {
 	isProcessRunning,
 	killProcess,
 	killProcessGracefully,
+	listDescendantPids,
+	parsePsPpidAdjacency,
+	signalDescendantProcesses,
 	signalProcessGroupOrPid,
 } from "./process-utils";
