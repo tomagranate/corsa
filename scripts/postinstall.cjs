@@ -8,6 +8,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 
 // Configuration
@@ -25,6 +26,8 @@ const ARCH_MAP = {
 	arm64: "arm64",
 	x64: "x64",
 };
+
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 
 // Colors (respects NO_COLOR env var)
 const useColor = !process.env.NO_COLOR && process.stdout.isTTY;
@@ -158,6 +161,35 @@ async function downloadWithProgress(url) {
 	return Buffer.concat(chunks);
 }
 
+async function downloadText(url) {
+	const response = await fetch(url, {
+		headers: { "User-Agent": "corsa-postinstall" },
+	});
+
+	if (!response.ok) {
+		throw new Error(`HTTP ${response.status}`);
+	}
+
+	return await response.text();
+}
+
+function parseSha256Checksum(content) {
+	const checksum = content.trim().split(/\s+/)[0]?.toLowerCase();
+	if (!checksum || !SHA256_HEX_PATTERN.test(checksum)) {
+		throw new Error("Invalid SHA256 checksum file");
+	}
+	return checksum;
+}
+
+function verifyBufferSha256(data, expectedSha256) {
+	const actualSha256 = crypto.createHash("sha256").update(data).digest("hex");
+	if (actualSha256 !== expectedSha256.toLowerCase()) {
+		throw new Error(
+			`Checksum mismatch for downloaded archive. Expected ${expectedSha256}, got ${actualSha256}`,
+		);
+	}
+}
+
 /**
  * Get the version from package.json
  */
@@ -219,17 +251,14 @@ function extractTarGz(data, destPath) {
 /**
  * Download and extract Unix binary
  */
-async function downloadBinary(url, destPath) {
-	const data = await downloadWithProgress(url);
+async function downloadBinary(data, destPath) {
 	await extractTarGz(data, destPath);
 }
 
 /**
  * Download and extract Windows binary
  */
-async function downloadWindowsBinary(url, destPath) {
-	const data = await downloadWithProgress(url);
-
+async function downloadWindowsBinary(data, destPath) {
 	const zipPath = `${destPath}.zip`;
 	fs.writeFileSync(zipPath, data);
 
@@ -253,10 +282,16 @@ async function downloadWindowsBinary(url, destPath) {
  * Download binary from URL
  */
 async function downloadFromUrl(url, destPath, isWindows) {
+	const data = await downloadWithProgress(url);
+	const expectedSha256 = parseSha256Checksum(
+		await downloadText(`${url}.sha256`),
+	);
+	verifyBufferSha256(data, expectedSha256);
+
 	if (isWindows) {
-		await downloadWindowsBinary(url, destPath);
+		await downloadWindowsBinary(data, destPath);
 	} else {
-		await downloadBinary(url, destPath);
+		await downloadBinary(data, destPath);
 	}
 }
 

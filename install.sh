@@ -174,6 +174,46 @@ download_binary() {
     return 1
 }
 
+# Download checksum from GitHub releases
+download_checksum() {
+    local version="$1"
+    local binary_name="$2"
+    local archive_ext="$3"
+    local output="$4"
+
+    local checksum_url="${RELEASES_URL}/download/v${version}/${binary_name}.${archive_ext}.sha256"
+
+    if curl -fsSL "$checksum_url" -o "$output" 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Verify a downloaded archive against its release SHA256 sidecar.
+verify_checksum() {
+    local archive="$1"
+    local checksum_file="$2"
+    local expected actual
+
+    expected=$(awk '{print tolower($1)}' "$checksum_file")
+    if [[ ! "$expected" =~ ^[a-f0-9]{64}$ ]]; then
+        error "Invalid checksum file"
+    fi
+
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$archive" | awk '{print tolower($1)}')
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$archive" | awk '{print tolower($1)}')
+    else
+        error "Cannot verify checksum: sha256sum or shasum is required"
+    fi
+
+    if [ "$actual" != "$expected" ]; then
+        error "Checksum verification failed for downloaded archive"
+    fi
+}
+
 # Main installation
 main() {
     print_header
@@ -214,11 +254,20 @@ main() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" EXIT
 
+    local archive_path="${tmp_dir}/archive.${archive_ext}"
+    local checksum_path="${archive_path}.sha256"
+
     # Download
     step "Downloading..."
-    if ! download_binary "$version" "$binary_name" "$archive_ext" "${tmp_dir}/archive.${archive_ext}"; then
+    if ! download_binary "$version" "$binary_name" "$archive_ext" "$archive_path"; then
         error "Download failed. Check that v${version} exists for ${os}-${arch}."
     fi
+    if ! download_checksum "$version" "$binary_name" "$archive_ext" "$checksum_path"; then
+        error "Checksum download failed. Check that v${version} includes checksum assets."
+    fi
+
+    step "Verifying checksum..."
+    verify_checksum "$archive_path" "$checksum_path"
 
     # Extract
     step "Extracting..."

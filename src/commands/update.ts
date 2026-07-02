@@ -3,9 +3,11 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	createWriteStream,
 	existsSync,
+	readFileSync,
 	realpathSync,
 	unlinkSync,
 } from "node:fs";
@@ -21,6 +23,8 @@ const NPM_PACKAGE = "@tomagranate/corsa";
 
 /** GitHub repo for releases */
 export const GITHUB_REPO = "tomagranate/corsa";
+
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 
 /** Installation method types */
 export type InstallMethod =
@@ -380,6 +384,27 @@ function downloadFile(url: string, destPath: string): Promise<void> {
 	});
 }
 
+export function parseSha256Checksum(content: string): string {
+	const checksum = content.trim().split(/\s+/)[0]?.toLowerCase();
+	if (!checksum || !SHA256_HEX_PATTERN.test(checksum)) {
+		throw new Error("Invalid SHA256 checksum file");
+	}
+	return checksum;
+}
+
+function sha256File(path: string): string {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+export function verifyFileSha256(path: string, expectedSha256: string): void {
+	const actualSha256 = sha256File(path);
+	if (actualSha256 !== expectedSha256.toLowerCase()) {
+		throw new Error(
+			`Checksum mismatch for downloaded archive. Expected ${expectedSha256}, got ${actualSha256}`,
+		);
+	}
+}
+
 /**
  * Extract a tar.gz file and return the path to the binary inside.
  */
@@ -471,14 +496,21 @@ async function selfUpdate(): Promise<void> {
 	const archiveExt = platform === "windows" ? "zip" : "tar.gz";
 	const binaryName = `corsa-${platform}-${arch}`;
 	const downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${latestVersion}/${binaryName}.${archiveExt}`;
+	const checksumUrl = `${downloadUrl}.sha256`;
 
 	console.log(`Downloading ${binaryName}...`);
 
 	// Download to temp directory
 	const tempDir = tmpdir();
 	const archivePath = join(tempDir, `corsa-update.${archiveExt}`);
+	const checksumPath = join(tempDir, `corsa-update.${archiveExt}.sha256`);
 
 	await downloadFile(downloadUrl, archivePath);
+	await downloadFile(checksumUrl, checksumPath);
+	verifyFileSha256(
+		archivePath,
+		parseSha256Checksum(readFileSync(checksumPath, "utf-8")),
+	);
 
 	// Extract the binary
 	console.log("Extracting...");
@@ -519,6 +551,7 @@ async function selfUpdate(): Promise<void> {
 	// Clean up
 	try {
 		unlinkSync(archivePath);
+		unlinkSync(checksumPath);
 	} catch {
 		// Ignore cleanup errors
 	}
