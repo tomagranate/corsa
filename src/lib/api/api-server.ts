@@ -14,6 +14,9 @@ import { fuzzyFindLines, substringFindLines } from "../search";
 /** Default port for the MCP API server */
 export const DEFAULT_MCP_PORT = 18765;
 
+/** Loopback host for the local MCP API server */
+export const DEFAULT_MCP_HOSTNAME = "127.0.0.1";
+
 /** Callback for config reload events */
 export type OnConfigReloadCallback = (config: Config) => void;
 
@@ -145,7 +148,7 @@ export class ApiServer {
 				this.instance = createInstanceMetadata({
 					configPath: this.options.configPath,
 					id: this.options.instanceId,
-					apiUrl: `http://localhost:${this.port}`,
+					apiUrl: `http://${DEFAULT_MCP_HOSTNAME}:${this.port}`,
 				});
 				registerInstance(this.instance);
 			}
@@ -156,7 +159,9 @@ export class ApiServer {
 			throw error;
 		}
 
-		this.log(`MCP API server listening on http://localhost:${this.port}`);
+		this.log(
+			`MCP API server listening on http://${DEFAULT_MCP_HOSTNAME}:${this.port}`,
+		);
 		this.log("Endpoints:");
 		this.log("  GET  /api/health");
 		this.log("  GET  /api/processes");
@@ -192,6 +197,7 @@ export class ApiServer {
 		while (attempts < 100) {
 			try {
 				this.server = Bun.serve({
+					hostname: DEFAULT_MCP_HOSTNAME,
 					port,
 					fetch: (req) => this.handleRequest(req),
 				});
@@ -234,11 +240,19 @@ export class ApiServer {
 		const url = new URL(req.url);
 		const path = url.pathname;
 		const method = req.method;
+		const origin = req.headers.get("Origin");
 
 		// Log the request
 		this.log(`${method} ${path}`);
 
 		try {
+			if (!this.isAllowedBrowserOrigin(origin)) {
+				return this.jsonResponse(
+					{ ok: false, error: "Browser origin not allowed" },
+					403,
+				);
+			}
+
 			// Health check
 			if (path === "/api/health" && method === "GET") {
 				return this.jsonResponse({
@@ -704,6 +718,23 @@ export class ApiServer {
 		}
 	}
 
+	private isAllowedBrowserOrigin(origin: string | null): boolean {
+		if (!origin) return true;
+
+		try {
+			const parsed = new URL(origin);
+			return (
+				parsed.protocol === "http:" &&
+				(parsed.hostname === DEFAULT_MCP_HOSTNAME ||
+					parsed.hostname === "localhost" ||
+					parsed.hostname === "::1") &&
+				parsed.port === String(this.port)
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	/**
 	 * Create a JSON response.
 	 */
@@ -712,7 +743,6 @@ export class ApiServer {
 			status,
 			headers: {
 				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
 			},
 		});
 	}

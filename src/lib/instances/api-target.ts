@@ -1,4 +1,4 @@
-import { DEFAULT_MCP_PORT } from "../api/api-server";
+import { DEFAULT_MCP_HOSTNAME, DEFAULT_MCP_PORT } from "../api/api-server";
 import { loadConfig } from "../config";
 import { listLiveInstances } from "./instance-registry";
 
@@ -46,8 +46,8 @@ export async function resolveApiUrl(
 	try {
 		const { config } = await loadConfig(configPath ?? "corsa.config.toml");
 		const port = config.mcp?.port ?? DEFAULT_MCP_PORT;
-		return `http://localhost:${port}`;
+		return `http://${DEFAULT_MCP_HOSTNAME}:${port}`;
 	} catch {
-		return `http://localhost:${DEFAULT_MCP_PORT}`;
+		return `http://${DEFAULT_MCP_HOSTNAME}:${DEFAULT_MCP_PORT}`;
 	}
 }
