@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -12,6 +13,8 @@ import {
 	detectInstallMethod,
 	detectInstallMethodFromPath,
 	type InstallMethod,
+	parseSha256Checksum,
+	verifyFileSha256,
 } from "../update";
 
 /**
@@ -352,5 +355,54 @@ describe("detectInstallMethod", () => {
 				process.argv.push(...saved);
 			}
 		});
+	});
+});
+
+describe("checksum verification", () => {
+	test("parseSha256Checksum accepts release sidecar format", () => {
+		const checksum =
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+		expect(parseSha256Checksum(`${checksum}  corsa-linux-x64.tar.gz\n`)).toBe(
+			checksum,
+		);
+	});
+
+	test("parseSha256Checksum rejects malformed checksum files", () => {
+		expect(() => parseSha256Checksum("not-a-checksum archive.tar.gz")).toThrow(
+			"Invalid SHA256 checksum file",
+		);
+	});
+
+	test("verifyFileSha256 accepts matching file contents", () => {
+		const root = mkdtempSync(join(tmpdir(), "corsa-checksum-"));
+		const archivePath = join(root, "archive.tar.gz");
+		writeFileSync(archivePath, "downloaded archive");
+		const checksum = createHash("sha256")
+			.update("downloaded archive")
+			.digest("hex");
+
+		try {
+			expect(() => verifyFileSha256(archivePath, checksum)).not.toThrow();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("verifyFileSha256 rejects mismatched file contents", () => {
+		const root = mkdtempSync(join(tmpdir(), "corsa-checksum-"));
+		const archivePath = join(root, "archive.tar.gz");
+		writeFileSync(archivePath, "tampered archive");
+		const checksum = createHash("sha256")
+			.update("expected archive")
+			.digest("hex");
+
+		try {
+			expect(() => verifyFileSha256(archivePath, checksum)).toThrow(
+				"Checksum mismatch",
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
