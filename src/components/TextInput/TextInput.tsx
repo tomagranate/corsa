@@ -3,6 +3,8 @@ import { useKeyboard } from "@opentui/react";
 import { useRef } from "react";
 import type { Theme } from "../../lib/theme";
 
+const pasteDecoder = new TextDecoder();
+
 interface TextInputProps {
 	/** Current input value */
 	value: string;
@@ -52,9 +54,10 @@ export function TextInput({
 	const handlePaste = (event: PasteEvent) => {
 		if (!focused) return;
 		const input = inputRef.current;
-		if (input && event.text) {
+		const text = pasteDecoder.decode(event.bytes);
+		if (input && text) {
 			// Insert the pasted text at the current cursor position
-			input.insertText(event.text);
+			input.insertText(text);
 		}
 	};
 

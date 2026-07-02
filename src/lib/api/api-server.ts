@@ -100,7 +100,7 @@ const MCP_API_TOOL_NAME = "MCP API";
  * Runs in-process and logs to a virtual tool tab.
  */
 export class ApiServer {
-	private server: Server | null = null;
+	private server: Server<undefined> | null = null;
 	private processManager: ProcessManager;
 	private port: number;
 	private onConfigReload: OnConfigReloadCallback | null = null;
