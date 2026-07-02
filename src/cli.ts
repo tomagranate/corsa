@@ -19,6 +19,8 @@ export interface CliArgs {
 	command?: "init" | "mcp" | "ctl" | "update";
 	/** Path to config file (--config/-c) */
 	configPath?: string;
+	/** Running corsa instance id (--id) */
+	instanceId?: string;
 	/** Parsed args for `corsa ctl` */
 	ctl?: CtlArgs;
 	/** Whether to show help (--help/-h) */
@@ -29,6 +31,7 @@ export interface CliArgs {
 
 export type CtlSubcommand =
 	| "list"
+	| "instances"
 	| "logs"
 	| "stop"
 	| "restart"
@@ -38,7 +41,12 @@ export type CtlSubcommand =
 
 export interface CtlArgs {
 	subcommand: CtlSubcommand;
+	instanceId?: string;
 	name?: string;
+	names?: string[];
+	status?: "running" | "stopped" | "error" | "shuttingDown" | "waiting";
+	fields?: string[];
+	logs?: number;
 	lines?: number;
 	search?: string;
 	searchType?: "substring" | "fuzzy";
@@ -72,6 +80,14 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): CliArgs {
 				process.exit(1);
 			}
 			args.configPath = nextArg;
+			i += 2;
+		} else if (arg === "--id") {
+			const nextArg = argv[i + 1];
+			if (!nextArg || nextArg.startsWith("-")) {
+				console.error("Error: --id requires an instance id");
+				process.exit(1);
+			}
+			args.instanceId = nextArg;
 			i += 2;
 		} else if (arg === "init") {
 			args.command = "init";
@@ -114,6 +130,7 @@ function parseCtlArgs(argv: string[]): CtlArgs | undefined {
 
 	const validSubcommands: CtlSubcommand[] = [
 		"list",
+		"instances",
 		"logs",
 		"stop",
 		"restart",
@@ -126,9 +143,32 @@ function parseCtlArgs(argv: string[]): CtlArgs | undefined {
 		ls: "list",
 		rm: "stop",
 	};
-	const normalized = aliases[first] ?? first;
+
+	let instanceId: string | undefined;
+	let subcommandIndex = 0;
+	while (subcommandIndex < argv.length) {
+		const arg = argv[subcommandIndex];
+		if (arg === "--id") {
+			const value = argv[subcommandIndex + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --id requires an instance id");
+				process.exit(1);
+			}
+			instanceId = value;
+			subcommandIndex += 2;
+			continue;
+		}
+		break;
+	}
+
+	const subcommand = argv[subcommandIndex];
+	if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+		return undefined;
+	}
+
+	const normalized = aliases[subcommand] ?? subcommand;
 	if (!validSubcommands.includes(normalized as CtlSubcommand)) {
-		console.error(`Error: Unknown ctl command: ${first}`);
+		console.error(`Error: Unknown ctl command: ${subcommand}`);
 		console.error("Run 'corsa --help' for usage information.");
 		process.exit(1);
 	}
@@ -138,8 +178,11 @@ function parseCtlArgs(argv: string[]): CtlArgs | undefined {
 		keys: [],
 		json: false,
 	};
+	if (instanceId) {
+		ctl.instanceId = instanceId;
+	}
 
-	let i = 1;
+	let i = subcommandIndex + 1;
 
 	// Commands that require a process name
 	const needsName = new Set<CtlSubcommand>([
@@ -166,6 +209,14 @@ function parseCtlArgs(argv: string[]): CtlArgs | undefined {
 		if (arg === "--json") {
 			ctl.json = true;
 			i++;
+		} else if (arg === "--id") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --id requires an instance id");
+				process.exit(1);
+			}
+			ctl.instanceId = value;
+			i += 2;
 		} else if (arg === "--lines") {
 			const value = argv[i + 1];
 			if (!value || value.startsWith("-")) {
@@ -178,6 +229,55 @@ function parseCtlArgs(argv: string[]): CtlArgs | undefined {
 				process.exit(1);
 			}
 			ctl.lines = parsed;
+			i += 2;
+		} else if (arg === "--logs") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --logs requires a number");
+				process.exit(1);
+			}
+			const parsed = Number.parseInt(value, 10);
+			if (!Number.isFinite(parsed) || parsed < 0) {
+				console.error("Error: --logs must be a non-negative integer");
+				process.exit(1);
+			}
+			ctl.logs = parsed;
+			i += 2;
+		} else if (arg === "--name") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --name requires a process name");
+				process.exit(1);
+			}
+			ctl.names = [...(ctl.names ?? []), value];
+			i += 2;
+		} else if (arg === "--status") {
+			const value = argv[i + 1];
+			const statuses = [
+				"running",
+				"stopped",
+				"error",
+				"shuttingDown",
+				"waiting",
+			];
+			if (!value || !statuses.includes(value)) {
+				console.error(
+					"Error: --status must be one of: running, stopped, error, shuttingDown, waiting",
+				);
+				process.exit(1);
+			}
+			ctl.status = value as CtlArgs["status"];
+			i += 2;
+		} else if (arg === "--fields") {
+			const value = argv[i + 1];
+			if (!value || value.startsWith("-")) {
+				console.error("Error: --fields requires a comma-separated field list");
+				process.exit(1);
+			}
+			ctl.fields = value
+				.split(",")
+				.map((field) => field.trim())
+				.filter(Boolean);
 			i += 2;
 		} else if (arg === "--search") {
 			const value = argv[i + 1];
@@ -240,16 +340,20 @@ Usage:
 
 Options:
   -c, --config <path>           Path to config file (default: corsa.config.toml)
+  --id <id>                     Running instance id for TUI registration or MCP/ctl targeting
   -h, --help                    Show this help message
   -v, --version                 Show version information
 
 Examples:
   corsa                        Start with default config
+  corsa --id web               Start and register as instance "web"
   corsa -c myconfig.toml       Start with custom config file
   corsa init                   Create corsa.config.toml in current directory
-  corsa mcp                    Start MCP server (configure in your IDE)
+  corsa mcp --id web           Start MCP server connected to instance "web"
   corsa ctl list               List all managed processes
+  corsa ctl instances          List running corsa instances
   corsa ctl ls                 Alias for list
+  corsa ctl --id web list --name api --fields name,status,healthStatus
   corsa ctl logs api --lines 200 --search error
   corsa ctl rm api             Alias for stop
   corsa ctl send-keys api --key "npm test" --key return
@@ -258,6 +362,7 @@ Examples:
 
 ctl commands:
   list                         List all processes (aliases: ps, ls)
+  instances                    List live corsa instances
   logs <name>                  Get logs for a process
   stop <name>                  Stop a process (alias: rm)
   restart <name>               Restart a process
@@ -267,6 +372,11 @@ ctl commands:
 
 ctl options:
   --json                       Output JSON response data
+  --id <id>                    Target a specific corsa instance
+  --name <name>                Filter list by process name (repeatable)
+  --status <status>            Filter list by status
+  --fields <fields>            Comma-separated list fields
+  --logs <n>                   Recent log lines per process in list output (default: 0)
   --lines <n>                  Log line limit (logs command)
   --search <query>             Log search query (logs command)
   --search-type <mode>         Search mode: substring|fuzzy (logs command)

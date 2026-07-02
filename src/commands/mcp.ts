@@ -8,8 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { DEFAULT_MCP_PORT } from "../lib/api";
-import { loadConfig } from "../lib/config";
+import { resolveApiUrl } from "../lib/instances";
 
 // Types for API responses
 interface ProcessSummary {
@@ -91,21 +90,11 @@ async function checkHealth(baseUrl: string): Promise<boolean> {
  * Run the MCP server.
  * @param configPath Optional path to config file to read MCP port from
  */
-export async function runMcp(configPath?: string): Promise<void> {
-	// Determine API URL from config or environment
-	let apiUrl = process.env.CORSA_API_URL;
-
-	if (!apiUrl) {
-		// Try to read port from config
-		try {
-			const { config } = await loadConfig(configPath ?? "corsa.config.toml");
-			const port = config.mcp?.port ?? DEFAULT_MCP_PORT;
-			apiUrl = `http://localhost:${port}`;
-		} catch {
-			// Config not found, use default
-			apiUrl = `http://localhost:${DEFAULT_MCP_PORT}`;
-		}
-	}
+export async function runMcp(
+	configPath?: string,
+	instanceId?: string,
+): Promise<void> {
+	const apiUrl = await resolveApiUrl(configPath, instanceId);
 
 	// Create MCP server
 	const server = new McpServer({
@@ -123,19 +112,59 @@ export async function runMcp(configPath?: string): Promise<void> {
 	// list_processes - List all processes with their status
 	server.tool(
 		"list_processes",
-		"List all running development processes (servers, workers, etc.) with their status. " +
-			"Use this to see what's running, check if processes crashed, or find the name of a process to get logs from.",
-		{},
-		async () => {
+		"List development processes with compact status metadata by default. " +
+			"Use filters to limit output, and set logs to a small number only when recent log preview is needed.",
+		{
+			names: z
+				.array(z.string())
+				.optional()
+				.describe("Optional process names to include"),
+			status: z
+				.enum(["running", "stopped", "error", "shuttingDown", "waiting"])
+				.optional()
+				.describe("Optional status filter"),
+			fields: z
+				.array(
+					z.enum([
+						"name",
+						"description",
+						"status",
+						"exitCode",
+						"logCount",
+						"pid",
+						"uptime",
+						"healthStatus",
+					]),
+				)
+				.optional()
+				.describe("Optional fields to return for each process"),
+			logs: z
+				.number()
+				.int()
+				.nonnegative()
+				.optional()
+				.describe("Recent log lines per process to include (default: 0)"),
+		},
+		async ({ names, status, fields, logs }) => {
+			const params = new URLSearchParams();
+			for (const name of names ?? []) {
+				params.append("name", name);
+			}
+			if (status) params.set("status", status);
+			if (fields && fields.length > 0) params.set("fields", fields.join(","));
+			if (logs !== undefined) params.set("logs", String(logs));
+			const query = params.toString();
+
 			const processes = await apiRequest<ProcessSummary[]>(
 				apiUrl,
-				"/api/processes",
+				`/api/processes${query ? `?${query}` : ""}`,
 			);
 
 			const formatted = processes
 				.map((p) => {
-					const status = p.status.toUpperCase();
-					const exitInfo = p.exitCode !== null ? ` (exit: ${p.exitCode})` : "";
+					const status = p.status?.toUpperCase() ?? "UNKNOWN";
+					const exitInfo =
+						typeof p.exitCode === "number" ? ` (exit: ${p.exitCode})` : "";
 					const pidInfo = p.pid ? ` [PID: ${p.pid}]` : "";
 					const uptimeInfo = p.uptime
 						? ` (up ${Math.round(p.uptime / 1000)}s)`
@@ -158,7 +187,9 @@ export async function runMcp(configPath?: string): Promise<void> {
 						logsSection = `${logsHeader}\n${logsText}`;
 					}
 
-					return `- ${p.name}: ${status}${exitInfo}${pidInfo}${uptimeInfo}${healthInfo} (${p.logCount} lines)${desc}${logsSection}`;
+					const lineCount =
+						typeof p.logCount === "number" ? ` (${p.logCount} lines)` : "";
+					return `- ${p.name ?? "(unnamed)"}: ${status}${exitInfo}${pidInfo}${uptimeInfo}${healthInfo}${lineCount}${desc}${logsSection}`;
 				})
 				.join("\n\n");
 
@@ -184,7 +215,7 @@ export async function runMcp(configPath?: string): Promise<void> {
 			lines: z
 				.number()
 				.optional()
-				.describe("Number of recent lines to return (default: 100)"),
+				.describe("Number of recent lines to return (default: 50)"),
 			search: z.string().optional().describe("Search query to filter logs"),
 			searchType: z
 				.enum(["substring", "fuzzy"])
@@ -193,7 +224,7 @@ export async function runMcp(configPath?: string): Promise<void> {
 					"Search type: 'substring' for exact match, 'fuzzy' for fuzzy matching (default: substring)",
 				),
 		},
-		async ({ name, lines = 100, search, searchType = "substring" }) => {
+		async ({ name, lines = 50, search, searchType = "substring" }) => {
 			const params = new URLSearchParams();
 			params.set("lines", String(lines));
 			if (search) {

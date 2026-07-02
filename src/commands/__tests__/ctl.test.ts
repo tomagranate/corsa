@@ -181,6 +181,43 @@ describe("parseArgs - ctl", () => {
 		expect(args.ctl?.subcommand).toBe("stop");
 		expect(args.ctl?.name).toBe("api");
 	});
+
+	test("parses global and ctl instance ids", () => {
+		const globalArgs = parseArgs(["--id", "web", "ctl", "list"]);
+		expect(globalArgs.instanceId).toBe("web");
+		expect(globalArgs.ctl?.subcommand).toBe("list");
+
+		const ctlArgs = parseArgs(["ctl", "--id", "api", "list"]);
+		expect(ctlArgs.ctl?.instanceId).toBe("api");
+		expect(ctlArgs.ctl?.subcommand).toBe("list");
+	});
+
+	test("parses list filters", () => {
+		const args = parseArgs([
+			"ctl",
+			"list",
+			"--name",
+			"api",
+			"--name",
+			"worker",
+			"--status",
+			"running",
+			"--fields",
+			"name,status,healthStatus",
+			"--logs",
+			"2",
+		]);
+
+		expect(args.ctl).toEqual({
+			subcommand: "list",
+			names: ["api", "worker"],
+			status: "running",
+			fields: ["name", "status", "healthStatus"],
+			logs: 2,
+			keys: [],
+			json: false,
+		});
+	});
 });
 
 describe("runCtl", () => {
@@ -198,6 +235,20 @@ describe("runCtl", () => {
 		const names = json.map((p) => p.name);
 		expect(names).toContain("test-process");
 		expect(names).toContain("long-running");
+	});
+
+	test("list omits logs by default and includes them with --logs", async () => {
+		const result = processManager.getToolByName("test-process");
+		if (!result) throw new Error("Expected test-process");
+		processManager.clearLogs(result.index);
+		processManager.addLogToTool(result.index, "ctl-list-log");
+
+		await runCtl({ subcommand: "list", keys: [], json: false });
+		expect(logOutput.join("\n")).not.toContain("ctl-list-log");
+
+		logOutput = [];
+		await runCtl({ subcommand: "list", logs: 1, keys: [], json: false });
+		expect(logOutput.join("\n")).toContain("ctl-list-log");
 	});
 
 	test("logs returns formatted output", async () => {

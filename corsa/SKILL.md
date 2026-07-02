@@ -42,13 +42,16 @@ If the user wants an MCP integration:
    - optional `port = 18765`
 2. Start MCP server:
    - `corsa mcp`
+   - use `corsa mcp --id <id>` when more than one API-enabled corsa instance is running.
 3. Configure MCP client to launch `corsa mcp`.
 
 ## Core Commands
 
 Use these stable commands for process operations. For AI automation, use these commands directly to read logs or control processes:
 
-- `corsa ctl list` (aliases: `ps`, `ls`) to inspect process status and recent logs
+- `corsa ctl instances` to list live API-enabled corsa instances and their IDs
+- `corsa ctl list` (aliases: `ps`, `ls`) to inspect compact process status
+- `corsa ctl list --name <name> --fields name,status,healthStatus --logs <n>` for a limited status/log preview
 - `corsa ctl logs <name> --lines <n> --search <query> --search-type substring|fuzzy`
 - `corsa ctl stop <name>` (alias: `rm`)
 - `corsa ctl restart <name>`
@@ -69,7 +72,7 @@ When the user is using MCP, map tasks to these tools:
 - `send_keys`
 - `reload_config`
 
-Prefer the smallest tool call that answers the user question.
+Prefer the smallest tool call that answers the user question. `list_processes` is compact by default; request logs or extra fields only when needed.
 
 ## Config Authoring Rules
 
@@ -118,6 +121,7 @@ Use this order:
    - `corsa ctl reload`
 
 If `corsa ctl` cannot connect, check that `corsa` is running and `[mcp].enabled = true` in config.
+If multiple live instances are listed, rerun the command with `--id <id>`.
 
 ## Additional Resources
 
