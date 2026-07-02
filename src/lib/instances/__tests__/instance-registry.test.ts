@@ -14,7 +14,7 @@ import {
 } from "../instance-registry";
 
 const registeredIds = new Set<string>();
-const servers: Server[] = [];
+const servers: Server<undefined>[] = [];
 const registryPath = join(
 	tmpdir(),
 	`corsa-instance-registry-test-${process.pid}.json`,

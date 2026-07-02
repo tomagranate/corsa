@@ -336,7 +336,7 @@ export function TabBar({
 					const tabIndex = homeEnabled ? index + 1 : index;
 					return (
 						<box
-							key={`${tool.config.name}-${index}`}
+							key={tool.config.name}
 							paddingLeft={2}
 							paddingRight={2}
 							paddingTop={0}

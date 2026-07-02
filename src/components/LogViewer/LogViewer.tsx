@@ -686,8 +686,8 @@ export const LogViewer = React.memo(function LogViewer({
 	// Listen for OpenTUI selection events to copy to clipboard
 	useEffect(() => {
 		const handleSelection = (selection: Selection | null) => {
-			// When selection completes (isSelecting becomes false) and there's selected text
-			if (selection && !selection.isSelecting) {
+			// When selection completes and there's selected text
+			if (selection && !selection.isDragging) {
 				const text = selection.getSelectedText();
 				if (text) {
 					copyText(text);
