@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ToolConfig } from "../../../types";
 import { deletePidFile } from "../../processes/pid-file";
 import { ProcessManager } from "../../processes/process-manager";
-import { ApiServer } from "../api-server";
+import { ApiServer, DEFAULT_MCP_HOSTNAME } from "../api-server";
 
 // Types for API responses
 interface ApiResponse {
@@ -41,7 +41,8 @@ let processManager: ProcessManager;
 let apiServer: ApiServer;
 let virtualToolIndex: number;
 
-const apiUrl = (path: string) => `http://localhost:${TEST_PORT}${path}`;
+const apiUrl = (path: string) =>
+	`http://${DEFAULT_MCP_HOSTNAME}:${TEST_PORT}${path}`;
 
 beforeAll(async () => {
 	processManager = new ProcessManager(100);
@@ -835,14 +836,37 @@ describe("ApiServer", () => {
 	});
 
 	// ==========================================================================
-	// CORS Headers
+	// Browser Origin Protection
 	// ==========================================================================
-	describe("CORS headers", () => {
-		test("includes Access-Control-Allow-Origin header", async () => {
+	describe("browser origin protection", () => {
+		test("does not include wildcard CORS headers", async () => {
 			const response = await fetch(apiUrl("/api/health"));
 
-			expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+			expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
 			expect(response.headers.get("Content-Type")).toBe("application/json");
+		});
+
+		test("rejects requests from non-local browser origins", async () => {
+			const response = await fetch(apiUrl("/api/health"), {
+				headers: { Origin: "https://example.com" },
+			});
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(403);
+			expect(json).toEqual({
+				ok: false,
+				error: "Browser origin not allowed",
+			});
+		});
+
+		test("allows same-origin browser requests", async () => {
+			const response = await fetch(apiUrl("/api/health"), {
+				headers: { Origin: `http://${DEFAULT_MCP_HOSTNAME}:${TEST_PORT}` },
+			});
+			const json = (await response.json()) as ApiResponse;
+
+			expect(response.status).toBe(200);
+			expect(json).toEqual({ ok: true, data: { status: "healthy" } });
 		});
 	});
 

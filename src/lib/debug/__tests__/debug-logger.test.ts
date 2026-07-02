@@ -12,6 +12,7 @@ import {
 } from "../debug-logger";
 
 const TEST_LOG_FILE = "/tmp/corsa-debug-test.log";
+const CUSTOM_LOG_FILE = "/tmp/custom-log.log";
 
 describe("debug-logger", () => {
 	beforeEach(() => {
@@ -20,6 +21,9 @@ describe("debug-logger", () => {
 		if (existsSync(TEST_LOG_FILE)) {
 			unlinkSync(TEST_LOG_FILE);
 		}
+		if (existsSync(CUSTOM_LOG_FILE)) {
+			unlinkSync(CUSTOM_LOG_FILE);
+		}
 	});
 
 	afterEach(() => {
@@ -27,6 +31,9 @@ describe("debug-logger", () => {
 		disableDebugLogging();
 		if (existsSync(TEST_LOG_FILE)) {
 			unlinkSync(TEST_LOG_FILE);
+		}
+		if (existsSync(CUSTOM_LOG_FILE)) {
+			unlinkSync(CUSTOM_LOG_FILE);
 		}
 	});
 
@@ -159,11 +166,15 @@ describe("debug-logger", () => {
 			// disableDebugLogging resets to default
 			disableDebugLogging();
 			expect(getDebugLogPath()).toBe(DEFAULT_DEBUG_LOG_FILE);
+			expect(DEFAULT_DEBUG_LOG_FILE.replaceAll("\\", "/")).toEndWith(
+				"/corsa/debug.log",
+			);
+			expect(DEFAULT_DEBUG_LOG_FILE).not.toBe("/tmp/corsa-debug.log");
 		});
 
 		it("returns custom path after configuration", () => {
-			enableDebugLogging("/tmp/custom-log.log");
-			expect(getDebugLogPath()).toBe("/tmp/custom-log.log");
+			enableDebugLogging(CUSTOM_LOG_FILE);
+			expect(getDebugLogPath()).toBe(CUSTOM_LOG_FILE);
 		});
 	});
 });

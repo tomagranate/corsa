@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { unlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -125,22 +125,20 @@ export async function savePidFile(
 	configPath?: string,
 ): Promise<void> {
 	const filePath = getPidFilePath(configPath);
-	const tempPath = `${filePath}.tmp`;
+	const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 
 	try {
 		// Write to temp file first
 		await Bun.write(tempPath, JSON.stringify(data, null, 2));
 
-		// Atomic rename (works on both Unix and Windows)
-		await Bun.write(filePath, await Bun.file(tempPath).text());
-
-		// Clean up temp file
-		try {
-			await Bun.write(tempPath, ""); // Clear it
-		} catch {
-			// Ignore cleanup errors
-		}
+		// Atomic rename within the same directory.
+		await rename(tempPath, filePath);
 	} catch (error) {
+		try {
+			await unlink(tempPath);
+		} catch {
+			// Ignore cleanup errors.
+		}
 		throw new Error(`Failed to save PID file: ${error}`);
 	}
 }
