@@ -66,6 +66,8 @@ showLineNumbers = "auto"
 # ------------------------------------------------------------------------------
 # Enable the HTTP API for AI agent integration via MCP.
 # When enabled, AI assistants can read logs, check status, and control processes.
+# If multiple corsa instances are running, start corsa with --id <id> and use
+# `corsa mcp --id <id>` or `corsa ctl --id <id> ...` to target it.
 
 [mcp]
 # Enable the HTTP API for MCP server integration (default: false)

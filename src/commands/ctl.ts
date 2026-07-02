@@ -1,6 +1,5 @@
 import type { CtlArgs } from "../cli";
-import { DEFAULT_MCP_PORT } from "../lib/api";
-import { loadConfig } from "../lib/config";
+import { listLiveInstances, resolveApiUrl } from "../lib/instances";
 
 interface ProcessSummary {
 	name: string;
@@ -25,19 +24,6 @@ interface ApiResponse<T> {
 	ok: boolean;
 	data?: T;
 	error?: string;
-}
-
-async function resolveApiUrl(configPath?: string): Promise<string> {
-	const fromEnv = process.env.CORSA_API_URL;
-	if (fromEnv) return fromEnv;
-
-	try {
-		const { config } = await loadConfig(configPath ?? "corsa.config.toml");
-		const port = config.mcp?.port ?? DEFAULT_MCP_PORT;
-		return `http://localhost:${port}`;
-	} catch {
-		return `http://localhost:${DEFAULT_MCP_PORT}`;
-	}
 }
 
 async function apiRequest<T>(
@@ -86,8 +72,9 @@ function formatProcessList(processes: ProcessSummary[]): string {
 
 	return processes
 		.map((p) => {
-			const status = p.status.toUpperCase();
-			const exitInfo = p.exitCode !== null ? ` (exit: ${p.exitCode})` : "";
+			const status = p.status?.toUpperCase() ?? "UNKNOWN";
+			const exitInfo =
+				typeof p.exitCode === "number" ? ` (exit: ${p.exitCode})` : "";
 			const pidInfo = p.pid ? ` [PID: ${p.pid}]` : "";
 			const uptimeInfo = p.uptime
 				? ` (up ${Math.round(p.uptime / 1000)}s)`
@@ -105,17 +92,34 @@ function formatProcessList(processes: ProcessSummary[]): string {
 				logsSection = `${logsHeader}\n${logsText}`;
 			}
 
-			return `- ${p.name}: ${status}${exitInfo}${pidInfo}${uptimeInfo}${healthInfo} (${p.logCount} lines)${desc}${logsSection}`;
+			const lineCount =
+				typeof p.logCount === "number" ? ` (${p.logCount} lines)` : "";
+			return `- ${p.name ?? "(unnamed)"}: ${status}${exitInfo}${pidInfo}${uptimeInfo}${healthInfo}${lineCount}${desc}${logsSection}`;
 		})
 		.join("\n\n");
 }
 
-async function runList(apiUrl: string, json: boolean): Promise<void> {
+async function runList(apiUrl: string, args: CtlArgs): Promise<void> {
+	const params = new URLSearchParams();
+	for (const name of args.names ?? []) {
+		params.append("name", name);
+	}
+	if (args.status) {
+		params.set("status", args.status);
+	}
+	if (args.fields && args.fields.length > 0) {
+		params.set("fields", args.fields.join(","));
+	}
+	if (args.logs !== undefined) {
+		params.set("logs", String(args.logs));
+	}
+
+	const query = params.toString();
 	const processes = await apiRequest<ProcessSummary[]>(
 		apiUrl,
-		"/api/processes",
+		`/api/processes${query ? `?${query}` : ""}`,
 	);
-	if (json) {
+	if (args.json) {
 		printJson(processes);
 		return;
 	}
@@ -125,7 +129,7 @@ async function runList(apiUrl: string, json: boolean): Promise<void> {
 async function runLogs(apiUrl: string, args: CtlArgs): Promise<void> {
 	const name = args.name as string;
 	const params = new URLSearchParams();
-	params.set("lines", String(args.lines ?? 100));
+	params.set("lines", String(args.lines ?? 50));
 	if (args.search) {
 		params.set("search", args.search);
 		params.set("searchType", args.searchType ?? "substring");
@@ -225,16 +229,47 @@ async function runReload(apiUrl: string, json: boolean): Promise<void> {
 	console.log(text);
 }
 
+async function runInstances(json: boolean): Promise<void> {
+	const instances = await listLiveInstances();
+	if (json) {
+		printJson(instances);
+		return;
+	}
+
+	if (instances.length === 0) {
+		console.log("No live corsa instances found");
+		return;
+	}
+
+	console.log(
+		instances
+			.map(
+				(instance) =>
+					`- ${instance.id}: ${instance.projectDir} (${instance.apiUrl}, pid ${instance.pid}, started ${instance.startedAt})`,
+			)
+			.join("\n"),
+	);
+}
+
 export async function runCtl(
 	args: CtlArgs,
 	configPath?: string,
+	instanceId?: string,
 ): Promise<void> {
 	try {
-		const apiUrl = await resolveApiUrl(configPath);
+		if (args.subcommand === "instances") {
+			await runInstances(args.json);
+			return;
+		}
+
+		const apiUrl = await resolveApiUrl(
+			configPath,
+			args.instanceId ?? instanceId,
+		);
 
 		switch (args.subcommand) {
 			case "list":
-				await runList(apiUrl, args.json);
+				await runList(apiUrl, args);
 				return;
 			case "logs":
 				await runLogs(apiUrl, args);

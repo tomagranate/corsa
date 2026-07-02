@@ -19,6 +19,7 @@ interface ProcessSummary {
 	logCount: number;
 	pid?: number;
 	uptime?: number;
+	recentLogs?: string[];
 }
 
 interface ProcessDetails extends ProcessSummary {
@@ -150,6 +151,50 @@ describe("ApiServer", () => {
 					process.exitCode === null || typeof process.exitCode === "number",
 				).toBe(true);
 			}
+		});
+
+		test("does not include recent logs by default", async () => {
+			const result = processManager.getToolByName("test-process");
+			if (!result) throw new Error("Expected test-process to exist");
+			processManager.clearLogs(result.index);
+			processManager.addLogToTool(result.index, "compact-list-log");
+
+			const response = await fetch(apiUrl("/api/processes"));
+			const json = (await response.json()) as ApiResponse;
+			const data = json.data as ProcessSummary[];
+			const testProcess = data.find((p) => p.name === "test-process");
+
+			expect(testProcess?.logCount).toBe(1);
+			expect(testProcess?.recentLogs).toBeUndefined();
+		});
+
+		test("includes recent logs when logs parameter is provided", async () => {
+			const result = processManager.getToolByName("test-process");
+			if (!result) throw new Error("Expected test-process to exist");
+			processManager.clearLogs(result.index);
+			processManager.addLogToTool(result.index, "list-log-A");
+			processManager.addLogToTool(result.index, "list-log-B");
+			processManager.addLogToTool(result.index, "list-log-C");
+
+			const response = await fetch(apiUrl("/api/processes?logs=2"));
+			const json = (await response.json()) as ApiResponse;
+			const data = json.data as ProcessSummary[];
+			const testProcess = data.find((p) => p.name === "test-process");
+
+			expect(testProcess?.recentLogs).toEqual(["list-log-B", "list-log-C"]);
+		});
+
+		test("filters by name, status, and fields", async () => {
+			const response = await fetch(
+				apiUrl(
+					"/api/processes?name=long-running&status=stopped&fields=name,status",
+				),
+			);
+			const json = (await response.json()) as ApiResponse;
+			const data = json.data as Array<Record<string, unknown>>;
+
+			expect(response.status).toBe(200);
+			expect(data).toEqual([{ name: "long-running", status: "stopped" }]);
 		});
 	});
 

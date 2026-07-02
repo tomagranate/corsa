@@ -96,13 +96,13 @@ async function main() {
 
 	// Handle mcp command
 	if (args.command === "mcp") {
-		await runMcp(args.configPath);
+		await runMcp(args.configPath, args.instanceId);
 		return;
 	}
 
 	// Handle ctl command
 	if (args.command === "ctl" && args.ctl) {
-		await runCtl(args.ctl, args.configPath);
+		await runCtl(args.ctl, args.configPath, args.instanceId);
 		return;
 	}
 
@@ -244,7 +244,10 @@ async function main() {
 		if (config.mcp?.enabled) {
 			const port = config.mcp.port ?? DEFAULT_MCP_PORT;
 			const apiToolIndex = processManager.createVirtualTool("MCP API");
-			apiServer = new ApiServer(processManager, port, apiToolIndex);
+			apiServer = new ApiServer(processManager, port, apiToolIndex, {
+				configPath,
+				instanceId: args.instanceId,
+			});
 
 			// Set up config reload handler
 			apiServer.setOnConfigReload((newConfig: Config) => {

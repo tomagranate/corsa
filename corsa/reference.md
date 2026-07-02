@@ -80,6 +80,15 @@ Start MCP server:
 corsa mcp
 ```
 
+When multiple API-enabled corsa instances are running, start or target a named instance:
+
+```bash
+corsa --id web
+corsa mcp --id web
+corsa ctl instances
+corsa ctl --id web list
+```
+
 Example MCP client entry:
 
 ```json
@@ -95,7 +104,7 @@ Example MCP client entry:
 
 ## 5) MCP Tool Mapping
 
-- Inspect process status -> `list_processes`
+- Inspect compact process status -> `list_processes`
 - Inspect logs -> `get_logs`
 - Stop/restart process -> `stop_process`, `restart_process`
 - Clear logs -> `clear_logs`

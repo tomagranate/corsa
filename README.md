@@ -98,6 +98,7 @@ npx skills add tomagranate/corsa
 | Option | Description |
 |--------|-------------|
 | `-c, --config <path>` | Path to config file (default: `corsa.config.toml`) |
+| `--id <id>` | Instance ID for TUI registration or MCP/CLI targeting |
 | `-h, --help` | Show help message |
 | `-v, --version` | Show version information |
 
@@ -105,7 +106,8 @@ npx skills add tomagranate/corsa
 
 | Subcommand | Description |
 |------------|-------------|
-| `corsa ctl list` | List all processes with status and recent logs (`ps`/`ls` aliases) |
+| `corsa ctl list` | List processes with compact status metadata (`ps`/`ls` aliases) |
+| `corsa ctl instances` | List live API-enabled corsa instances |
 | `corsa ctl logs <name>` | Get recent logs for a process |
 | `corsa ctl stop <name>` | Stop a running process (`rm` alias) |
 | `corsa ctl restart <name>` | Restart a process |
@@ -129,9 +131,15 @@ corsa init
 # Start MCP server for AI integration
 corsa mcp
 
+# Start or target a named instance
+corsa --id web
+corsa mcp --id web
+corsa ctl --id web list
+
 # List processes via CLI control API
 corsa ctl list
 corsa ctl ls
+corsa ctl list --name backend --fields name,status,healthStatus --logs 2
 
 # Read logs with filtering
 corsa ctl logs backend --lines 200 --search ERROR --search-type substring
@@ -242,12 +250,22 @@ Add to your MCP configuration (e.g., `~/.cursor/mcp.json`):
 }
 ```
 
+If multiple corsa instances are running, give each one an explicit ID and target
+that ID from MCP or `ctl`:
+
+```bash
+corsa --id web
+corsa mcp --id web
+corsa ctl --id web list
+corsa ctl instances
+```
+
 ### Available MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_processes` | List all processes with status, health, and last 20 log lines |
-| `get_logs` | Get recent logs (supports search and line limits) |
+| `list_processes` | List processes with compact status metadata by default; supports field, status, name, and opt-in log preview filters |
+| `get_logs` | Get recent logs (default 50 lines; supports search and explicit line limits) |
 | `stop_process` | Stop a running process |
 | `restart_process` | Restart a process |
 | `clear_logs` | Clear logs for a process |

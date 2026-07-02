@@ -1,6 +1,12 @@
 import type { Server } from "bun";
 import type { HealthStatus } from "../../types";
 import type { Config } from "../config";
+import {
+	type CorsaInstance,
+	createInstanceMetadata,
+	registerInstance,
+	unregisterInstance,
+} from "../instances/instance-registry";
 import type { ProcessManager } from "../processes";
 import { keyNameToPty } from "../processes/key-to-pty";
 import { fuzzyFindLines, substringFindLines } from "../search";
@@ -29,13 +35,37 @@ interface ApiErrorResponse {
 type ApiResponse<T> = ApiSuccessResponse<T> | ApiErrorResponse;
 
 /** Number of recent log lines to include in process list */
-const RECENT_LOGS_COUNT = 20;
+const DEFAULT_EXPLICIT_RECENT_LOGS_COUNT = 20;
+
+const PROCESS_STATUSES = [
+	"running",
+	"stopped",
+	"error",
+	"shuttingDown",
+	"waiting",
+] as const;
+
+type ProcessStatus = (typeof PROCESS_STATUSES)[number];
+
+const PROCESS_SUMMARY_FIELDS = [
+	"name",
+	"description",
+	"status",
+	"exitCode",
+	"logCount",
+	"pid",
+	"uptime",
+	"healthStatus",
+	"recentLogs",
+] as const;
+
+type ProcessSummaryField = (typeof PROCESS_SUMMARY_FIELDS)[number];
 
 /** Process summary returned by list endpoint */
 interface ProcessSummary {
 	name: string;
 	description?: string;
-	status: "running" | "stopped" | "error" | "shuttingDown" | "waiting";
+	status: ProcessStatus;
 	exitCode: number | null;
 	logCount: number;
 	pid?: number;
@@ -44,6 +74,11 @@ interface ProcessSummary {
 	healthStatus?: HealthStatus;
 	/** Last N log lines (plain text) */
 	recentLogs?: string[];
+}
+
+export interface ApiServerOptions {
+	instanceId?: string;
+	configPath?: string;
 }
 
 /** Full process details */
@@ -67,14 +102,18 @@ export class ApiServer {
 	private port: number;
 	private onConfigReload: OnConfigReloadCallback | null = null;
 	private getHealthStatus: GetHealthStatusCallback | null = null;
+	private options: ApiServerOptions;
+	private instance: CorsaInstance | null = null;
 
 	constructor(
 		processManager: ProcessManager,
 		port: number,
 		_toolIndex: number,
+		options: ApiServerOptions = {},
 	) {
 		this.processManager = processManager;
 		this.port = port;
+		this.options = options;
 		// Note: toolIndex parameter kept for backward compatibility but not used.
 		// We look up the tool by name to handle index changes after config reload.
 	}
@@ -99,10 +138,24 @@ export class ApiServer {
 	 * Start the HTTP server.
 	 */
 	start(): void {
-		this.server = Bun.serve({
-			port: this.port,
-			fetch: (req) => this.handleRequest(req),
-		});
+		this.startOnAvailablePort();
+
+		try {
+			if (this.options.configPath) {
+				this.instance = createInstanceMetadata({
+					configPath: this.options.configPath,
+					id: this.options.instanceId,
+					apiUrl: `http://localhost:${this.port}`,
+				});
+				registerInstance(this.instance);
+			}
+		} catch (error) {
+			this.server?.stop();
+			this.server = null;
+			this.instance = null;
+			throw error;
+		}
+
 		this.log(`MCP API server listening on http://localhost:${this.port}`);
 		this.log("Endpoints:");
 		this.log("  GET  /api/health");
@@ -123,8 +176,43 @@ export class ApiServer {
 		if (this.server) {
 			this.server.stop();
 			this.server = null;
+			if (this.instance) {
+				unregisterInstance(this.instance.id);
+				this.instance = null;
+			}
 			this.log("MCP API server stopped");
 		}
+	}
+
+	private startOnAvailablePort(): void {
+		let port = this.port;
+		let attempts = 0;
+		let lastError: unknown;
+
+		while (attempts < 100) {
+			try {
+				this.server = Bun.serve({
+					port,
+					fetch: (req) => this.handleRequest(req),
+				});
+				this.port = this.server.port ?? port;
+				return;
+			} catch (error) {
+				lastError = error;
+				const message = error instanceof Error ? error.message : String(error);
+				const lowerMessage = message.toLowerCase();
+				if (
+					!lowerMessage.includes("addrinuse") &&
+					!lowerMessage.includes("in use")
+				) {
+					throw error;
+				}
+				port++;
+				attempts++;
+			}
+		}
+
+		throw lastError;
 	}
 
 	/**
@@ -153,7 +241,13 @@ export class ApiServer {
 		try {
 			// Health check
 			if (path === "/api/health" && method === "GET") {
-				return this.jsonResponse({ ok: true, data: { status: "healthy" } });
+				return this.jsonResponse({
+					ok: true,
+					data: {
+						status: "healthy",
+						...(this.instance && { instance: this.instance }),
+					},
+				});
 			}
 
 			// Reload configuration
@@ -163,7 +257,7 @@ export class ApiServer {
 
 			// List all processes
 			if (path === "/api/processes" && method === "GET") {
-				return this.handleListProcesses();
+				return this.handleListProcesses(url.searchParams);
 			}
 
 			// Process-specific routes
@@ -225,16 +319,72 @@ export class ApiServer {
 	/**
 	 * List all processes with summary information.
 	 */
-	private handleListProcesses(): Response {
+	private handleListProcesses(params: URLSearchParams): Response {
+		const requestedNames = new Set(params.getAll("name"));
+		const requestedStatus = params.get("status");
+		if (
+			requestedStatus &&
+			!PROCESS_STATUSES.includes(requestedStatus as ProcessStatus)
+		) {
+			return this.jsonResponse(
+				{
+					ok: false,
+					error:
+						"Invalid status. Expected one of: running, stopped, error, shuttingDown, waiting",
+				},
+				400,
+			);
+		}
+
+		const fieldsParam = params.get("fields");
+		let fields: Set<ProcessSummaryField> | null = null;
+		if (fieldsParam) {
+			fields = new Set();
+			for (const field of fieldsParam.split(",").map((f) => f.trim())) {
+				if (!field) continue;
+				if (!PROCESS_SUMMARY_FIELDS.includes(field as ProcessSummaryField)) {
+					return this.jsonResponse(
+						{
+							ok: false,
+							error: `Invalid field "${field}". Expected one of: ${PROCESS_SUMMARY_FIELDS.join(", ")}`,
+						},
+						400,
+					);
+				}
+				fields.add(field as ProcessSummaryField);
+			}
+		}
+
+		const logsParam = params.get("logs");
+		const logs =
+			logsParam === null
+				? fields?.has("recentLogs")
+					? DEFAULT_EXPLICIT_RECENT_LOGS_COUNT
+					: 0
+				: parseInt(logsParam, 10);
+		if (!Number.isFinite(logs) || logs < 0) {
+			return this.jsonResponse(
+				{
+					ok: false,
+					error: "Invalid logs value. Expected 0 or a positive integer",
+				},
+				400,
+			);
+		}
+
 		const tools = this.processManager.getTools();
 		const processes: ProcessSummary[] = tools
 			.filter((tool) => tool.config.name !== "MCP API") // Exclude self
+			.filter(
+				(tool) =>
+					requestedNames.size === 0 || requestedNames.has(tool.config.name),
+			)
+			.filter(
+				(tool) =>
+					!requestedStatus ||
+					tool.status === (requestedStatus as ProcessStatus),
+			)
 			.map((tool) => {
-				// Get recent logs as plain text
-				const recentLogs = tool.logs
-					.slice(-RECENT_LOGS_COUNT)
-					.map((logLine) => logLine.segments.map((seg) => seg.text).join(""));
-
 				const summary: ProcessSummary = {
 					name: tool.config.name,
 					description: tool.config.description,
@@ -243,8 +393,13 @@ export class ApiServer {
 					logCount: tool.logs.length,
 					pid: tool.pid,
 					uptime: tool.startTime ? Date.now() - tool.startTime : undefined,
-					recentLogs,
 				};
+
+				if (logs > 0) {
+					summary.recentLogs = tool.logs
+						.slice(-logs)
+						.map((logLine) => logLine.segments.map((seg) => seg.text).join(""));
+				}
 
 				// Include health status if available
 				if (tool.config.healthCheck && this.getHealthStatus) {
@@ -257,7 +412,19 @@ export class ApiServer {
 				return summary;
 			});
 
-		return this.jsonResponse({ ok: true, data: processes });
+		const filteredProcesses = fields
+			? processes.map((process) => {
+					const filtered: Partial<ProcessSummary> = {};
+					for (const field of fields) {
+						if (process[field] !== undefined) {
+							filtered[field] = process[field] as never;
+						}
+					}
+					return filtered as ProcessSummary;
+				})
+			: processes;
+
+		return this.jsonResponse({ ok: true, data: filteredProcesses });
 	}
 
 	/**
