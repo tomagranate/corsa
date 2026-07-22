@@ -3,6 +3,18 @@ import { TextAttributes } from "@opentui/core";
 import type { TextSegment } from "../../../types";
 import { getVisibleWidth, parseAnsiLine, wrapSegments } from "../ansi";
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: verifies terminal controls never reach rendered segments
+const UNSAFE_CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x9b]/;
+
+function expectSanitized(input: string, visibleText: string): TextSegment[] {
+	const segments = parseAnsiLine(input);
+	for (const segment of segments) {
+		expect(segment.text).not.toMatch(UNSAFE_CONTROL_RE);
+	}
+	expect(segments.map((segment) => segment.text).join("")).toBe(visibleText);
+	return segments;
+}
+
 describe("ANSI parsing", () => {
 	test("parseAnsiLine - plain text", () => {
 		const result = parseAnsiLine("Hello, world!");
@@ -40,13 +52,9 @@ describe("ANSI parsing", () => {
 		expect(result).toHaveLength(0);
 	});
 
-	test("parseAnsiLine - only ANSI codes returns raw text as fallback", () => {
+	test("parseAnsiLine - only ANSI codes returns no segments", () => {
 		const result = parseAnsiLine("\x1b[31m\x1b[0m");
-		// When there are only ANSI codes with no visible text, the function
-		// returns the raw input as a fallback segment (no color processing)
-		expect(result).toHaveLength(1);
-		expect(result[0]?.text).toBe("\x1b[31m\x1b[0m");
-		expect(result[0]?.color).toBeUndefined();
+		expect(result).toHaveLength(0);
 	});
 
 	test("parseAnsiLine - standard vs bright foreground colors have different indices", () => {
@@ -86,6 +94,177 @@ describe("ANSI parsing", () => {
 		expect(stdWhiteSeg?.colorIndex).toBe(7); // White
 		expect(brightWhiteSeg?.colorIndex).toBe(15); // Bright White
 		expect(stdWhiteSeg?.colorIndex).not.toBe(brightWhiteSeg?.colorIndex);
+	});
+});
+
+describe("ANSI hostile control sanitization", () => {
+	test.each([
+		["RIS", "before\x1bcafter", "beforeafter"],
+		["save/restore cursor", "a\x1b7b\x1b8c", "abc"],
+		["reverse index and keypad modes", "a\x1bMb\x1b=c\x1b>d", "abcd"],
+		["charset selection", "a\x1b(Bb\x1b)0c\x1b*Ad\x1b+0e", "abcde"],
+		["private CSI", "a\x1b[?25lb\x1b[?25hc\x1b[?1049hd\x1b[?2004le", "abcde"],
+		["prefixed CSI", "before\x1b[>4;2mafter", "beforeafter"],
+		["CSI intermediates", "a\x1b[ qb\x1b[?25$pc", "abc"],
+		["OSC title", "\x1b]0;title\x07hello", "hello"],
+		["OSC hyperlink", "\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\", "link"],
+		["unterminated OSC", "hello\x1b]0;unfinished", "hello"],
+		["DCS", "a\x1bPpayload\x1b\\b", "ab"],
+		["SOS", "a\x1bXpayload\x1b\\b", "ab"],
+		["PM", "a\x1b^payload\x1b\\b", "ab"],
+		["APC unterminated", "a\x1b_payload", "a"],
+		["C1 CSI", "a\x9b31mb", "ab"],
+		["lone ESC", "hello\x1b", "hello"],
+		["stray BEL", "be\x07ll", "bell"],
+	] as const)("drops %s", (_name, input, visibleText) => {
+		expectSanitized(input, visibleText);
+	});
+
+	test("a line containing only hostile escapes has zero segments", () => {
+		const segments = expectSanitized("\x1bc\x1b[?25l\x1b]title\x07", "");
+		expect(segments).toHaveLength(0);
+	});
+
+	test("preserves SGR styling around hostile controls", () => {
+		const segments = expectSanitized(
+			"\x1b[31mred\x1bc\x1b[32mgreen",
+			"redgreen",
+		);
+		expect(
+			segments.map(({ text, colorIndex }) => ({ text, colorIndex })),
+		).toEqual([
+			{ text: "red", colorIndex: 1 },
+			{ text: "green", colorIndex: 2 },
+		]);
+	});
+
+	test("prefixed m CSI does not alter style state", () => {
+		const segments = expectSanitized(
+			"\x1b[31mred\x1b[>4;2mstill red",
+			"redstill red",
+		);
+		expect(segments).toHaveLength(1);
+		expect(segments[0]?.colorIndex).toBe(1);
+	});
+
+	test("getVisibleWidth uses the same comprehensive sanitization", () => {
+		expect(getVisibleWidth("a\x1bc\x1b]title\x07b\x07中")).toBe(4);
+	});
+});
+
+describe("exhaustive escape sequence coverage", () => {
+	const csiFinals = Array.from({ length: 0x7e - 0x40 + 1 }, (_, index) =>
+		String.fromCharCode(0x40 + index),
+	);
+
+	test.each(csiFinals)("drops CSI with params and final %s", (final) => {
+		expectSanitized(`a\x1b[1;2${final}b`, "ab");
+	});
+
+	test.each(csiFinals)("drops CSI with empty params and final %s", (final) => {
+		expectSanitized(`a\x1b[${final}b`, "ab");
+	});
+
+	test("standard m remains SGR", () => {
+		const segments = expectSanitized("a\x1b[31mb", "ab");
+		expect(segments.find((segment) => segment.text === "b")?.colorIndex).toBe(
+			1,
+		);
+	});
+
+	test.each(
+		["<", "=", ">", "?"].flatMap((prefix) =>
+			["m", "h", "l"].map((final) => [prefix, final] as const),
+		),
+	)("drops private CSI prefix %s with final %s", (prefix, final) => {
+		const segments = expectSanitized(
+			`a\x1b[31mred\x1b[${prefix}4;2${final}b`,
+			"aredb",
+		);
+		expect(
+			segments.find((segment) => segment.text.includes("redb"))?.colorIndex,
+		).toBe(1);
+	});
+
+	test.each([
+		" ",
+		"!",
+		'"',
+		"#",
+		"$",
+		"%",
+		"&",
+		"'",
+		"(",
+		")",
+		"*",
+		"+",
+		",",
+		"-",
+		".",
+		"/",
+	])("drops CSI intermediate %s", (intermediate) => {
+		expectSanitized(`a\x1b[1${intermediate}pb`, "ab");
+	});
+
+	const excludedEscFinals = new Set([
+		"[",
+		"]",
+		"P",
+		"X",
+		"^",
+		"_",
+		"(",
+		")",
+		"*",
+		"+",
+	]);
+	const escFinals = Array.from({ length: 0x7e - 0x30 + 1 }, (_, index) =>
+		String.fromCharCode(0x30 + index),
+	).filter((final) => !excludedEscFinals.has(final));
+
+	test.each(escFinals)("drops ESC single-byte final %s", (final) => {
+		expectSanitized(`a\x1b${final}b`, "ab");
+	});
+
+	test.each(
+		["(", ")", "*", "+"].flatMap((introducer) =>
+			["B", "0", "A"].map((final) => [introducer, final] as const),
+		),
+	)("drops charset designator ESC %s %s", (introducer, final) => {
+		expectSanitized(`a\x1b${introducer}${final}b`, "ab");
+	});
+
+	test.each([
+		["OSC BEL", "a\x1b]payload\x07b", "ab"],
+		["OSC ST", "a\x1b]payload\x1b\\b", "ab"],
+		["OSC unterminated", "a\x1b]payload", "a"],
+		["DCS ST", "a\x1bPpayload\x1b\\b", "ab"],
+		["DCS unterminated", "a\x1bPpayload", "a"],
+		["SOS ST", "a\x1bXpayload\x1b\\b", "ab"],
+		["SOS unterminated", "a\x1bXpayload", "a"],
+		["PM ST", "a\x1b^payload\x1b\\b", "ab"],
+		["PM unterminated", "a\x1b^payload", "a"],
+		["APC ST", "a\x1b_payload\x1b\\b", "ab"],
+		["APC unterminated", "a\x1b_payload", "a"],
+	] as const)("handles %s string termination", (_name, input, visible) => {
+		expectSanitized(input, visible);
+	});
+
+	test.each([
+		...Array.from({ length: 0x20 }, (_, code) => code),
+		0x7f,
+	])("handles embedded C0/DEL byte 0x%s", (code) => {
+		const input = `a${String.fromCharCode(code)}b`;
+		if (code === 0x09 || code === 0x0a || code === 0x0d) {
+			// Tabs, LF, and CR are intentionally preserved by the current parser.
+			expectSanitized(input, input);
+		} else if (code === 0x1b) {
+			// ESC consumes the following byte as its single-byte escape sequence.
+			expectSanitized(input, "a");
+		} else {
+			expectSanitized(input, "ab");
+		}
 	});
 });
 

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { parseAnsiLine } from "../../text/ansi";
 import { LineParser } from "../line-parser";
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: verifies terminal controls never reach rendered segments
+const UNSAFE_CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x9b]/;
 
 /**
  * Helper: feed a string through a LineParser and collect emitted lines.
@@ -135,6 +139,35 @@ describe("LineParser", () => {
 			{ line: "Hello World", isReplacement: false },
 			{ line: "Line 2", isReplacement: false },
 		]);
+	});
+
+	test("sanitizes CSI split across push() calls after line reassembly", () => {
+		const lines: string[] = [];
+		const parser = new LineParser((line) => lines.push(line));
+		parser.push("\x1b[2");
+		parser.push("Jrest\n");
+
+		const segments = parseAnsiLine(lines[0] ?? "");
+		expect(segments.map((segment) => segment.text).join("")).toBe("rest");
+		expect(
+			segments.every((segment) => !UNSAFE_CONTROL_RE.test(segment.text)),
+		).toBe(true);
+	});
+
+	test("sanitizes OSC split across write() calls after line reassembly", () => {
+		const lines: string[] = [];
+		const parser = new LineParser((line) => lines.push(line));
+		const encoder = new TextEncoder();
+		parser.write(encoder.encode("before\x1b]0;mid"));
+		parser.write(encoder.encode("dle\x1b\\after\n"));
+
+		const segments = parseAnsiLine(lines[0] ?? "");
+		expect(segments.map((segment) => segment.text).join("")).toBe(
+			"beforeafter",
+		);
+		expect(
+			segments.every((segment) => !UNSAFE_CONTROL_RE.test(segment.text)),
+		).toBe(true);
 	});
 
 	test("handles newline split across chunks", () => {

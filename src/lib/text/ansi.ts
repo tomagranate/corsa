@@ -2,18 +2,121 @@ import { TextAttributes } from "@opentui/core";
 import type { TextSegment } from "../../types";
 
 const ESC = String.fromCharCode(27);
-// Match ANSI escape sequences: ESC[ followed by parameters and ending with a letter
-const ANSI_ESCAPE_REGEX = new RegExp(`${ESC}\\[([0-9;]*)([a-zA-Z])`, "g");
+const BEL = "\x07";
+const C1_CSI = "\x9b";
+// biome-ignore lint/suspicious/noControlCharactersInRegex: terminal controls must be removed before rendering
+const UNSAFE_CONTROL_REGEX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x9b]/g;
+
+interface EscapeToken {
+	end: number;
+	sgrParams?: string;
+}
+
+/** Consume one ECMA-48 escape/control sequence beginning at `start`. */
+function consumeEscape(text: string, start: number): EscapeToken {
+	const isC1Csi = text[start] === C1_CSI;
+	if (!isC1Csi && text[start] !== ESC) return { end: start + 1 };
+
+	const introducer = isC1Csi ? "[" : text[start + 1];
+	let index = start + (isC1Csi ? 1 : 2);
+
+	if (introducer === "[") {
+		const paramsStart = index;
+		while (index < text.length) {
+			const code = text.charCodeAt(index);
+			if (code < 0x30 || code > 0x3f) break;
+			index++;
+		}
+		const paramsEnd = index;
+		while (index < text.length) {
+			const code = text.charCodeAt(index);
+			if (code < 0x20 || code > 0x2f) break;
+			index++;
+		}
+		if (index < text.length) {
+			const finalCode = text.charCodeAt(index);
+			if (finalCode >= 0x40 && finalCode <= 0x7e) {
+				const params = text.slice(paramsStart, paramsEnd);
+				const isStandardSgr =
+					!isC1Csi &&
+					text[index] === "m" &&
+					paramsEnd === index &&
+					/^[0-9;]*$/.test(params);
+				return {
+					end: index + 1,
+					sgrParams: isStandardSgr ? params : undefined,
+				};
+			}
+		}
+		// An incomplete CSI cannot safely contribute visible text.
+		return { end: text.length };
+	}
+
+	if (introducer === "]") {
+		while (index < text.length) {
+			if (text[index] === BEL) return { end: index + 1 };
+			if (text[index] === ESC && text[index + 1] === "\\") {
+				return { end: index + 2 };
+			}
+			index++;
+		}
+		return { end: text.length };
+	}
+
+	if (
+		introducer === "P" ||
+		introducer === "X" ||
+		introducer === "^" ||
+		introducer === "_"
+	) {
+		while (index < text.length) {
+			if (text[index] === ESC && text[index + 1] === "\\") {
+				return { end: index + 2 };
+			}
+			index++;
+		}
+		return { end: text.length };
+	}
+
+	if (
+		introducer === "(" ||
+		introducer === ")" ||
+		introducer === "*" ||
+		introducer === "+"
+	) {
+		return { end: Math.min(start + 3, text.length) };
+	}
+
+	return { end: Math.min(start + 2, text.length) };
+}
+
+function stripTerminalControls(text: string): string {
+	let cleanText = "";
+	for (let index = 0; index < text.length; ) {
+		const nextEsc = text.indexOf(ESC, index);
+		const nextC1Csi = text.indexOf(C1_CSI, index);
+		const nextControl =
+			nextEsc < 0
+				? nextC1Csi
+				: nextC1Csi < 0
+					? nextEsc
+					: Math.min(nextEsc, nextC1Csi);
+		if (nextControl < 0) {
+			cleanText += text.slice(index);
+			break;
+		}
+		cleanText += text.slice(index, nextControl);
+		index = consumeEscape(text, nextControl).end;
+	}
+	return cleanText.replace(UNSAFE_CONTROL_REGEX, "");
+}
 
 /**
  * Calculates the visible width of text, ignoring ANSI escape codes.
  * Handles wide Unicode characters (count as 2 columns).
  */
 export function getVisibleWidth(text: string): number {
-	// Remove ANSI escape codes first
-	const esc = String.fromCharCode(27);
-	const ansiPattern = new RegExp(`${esc}\\[[0-9;]*[a-zA-Z]`, "g");
-	const cleanText = text.replace(ansiPattern, "");
+	const cleanText = stripTerminalControls(text);
 
 	let width = 0;
 	for (const char of cleanText) {
@@ -78,6 +181,7 @@ export function parseAnsiLine(text: string): TextSegment[] {
 
 	// Reset function to create a new segment
 	const pushSegment = () => {
+		currentText = currentText.replace(UNSAFE_CONTROL_REGEX, "");
 		if (currentText.length > 0) {
 			segments.push({
 				text: currentText,
@@ -91,25 +195,26 @@ export function parseAnsiLine(text: string): TextSegment[] {
 		}
 	};
 
-	// Process the text, finding ANSI codes
-	let lastIndex = 0;
-
-	// Reset regex
-	ANSI_ESCAPE_REGEX.lastIndex = 0;
-
-	// Use matchAll for cleaner iteration
-	const matches = Array.from(text.matchAll(ANSI_ESCAPE_REGEX));
-	for (const match of matches) {
-		// Add text before the ANSI code
-		if (match.index !== undefined && match.index > lastIndex) {
-			currentText += text.substring(lastIndex, match.index);
+	// Scan left-to-right, retaining only printable text and standard SGR styling.
+	for (let index = 0; index < text.length; ) {
+		const nextEsc = text.indexOf(ESC, index);
+		const nextC1Csi = text.indexOf(C1_CSI, index);
+		const nextControl =
+			nextEsc < 0
+				? nextC1Csi
+				: nextC1Csi < 0
+					? nextEsc
+					: Math.min(nextEsc, nextC1Csi);
+		if (nextControl < 0) {
+			currentText += text.slice(index);
+			break;
 		}
+		currentText += text.slice(index, nextControl);
 
-		const params = match[1] ?? "";
-		const code = match[2];
-
-		// Process SGR (Select Graphic Rendition) codes (ending with 'm')
-		if (code === "m") {
+		const token = consumeEscape(text, nextControl);
+		index = token.end;
+		if (token.sgrParams !== undefined) {
+			const params = token.sgrParams;
 			if (params === "") {
 				// Reset all
 				pushSegment();
@@ -322,23 +427,15 @@ export function parseAnsiLine(text: string): TextSegment[] {
 				}
 			}
 		}
-
-		if (match.index !== undefined) {
-			lastIndex = match.index + match[0].length;
-		}
-	}
-
-	// Add remaining text
-	if (lastIndex < text.length) {
-		currentText += text.substring(lastIndex);
 	}
 
 	// Push final segment
 	pushSegment();
 
-	// If no segments were created but there was text, create a default segment
-	if (segments.length === 0 && text.trim().length > 0) {
-		segments.push({ text });
+	// Never use the raw input as fallback: it may consist only of controls.
+	if (segments.length === 0) {
+		const sanitizedText = stripTerminalControls(text);
+		if (sanitizedText.trim().length > 0) segments.push({ text: sanitizedText });
 	}
 
 	return segments;

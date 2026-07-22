@@ -130,6 +130,14 @@ cwd = "."
 cleanup = []
 
 [[tools]]
+name = "ansi-torture"
+command = "bun"
+args = ["test-scripts/ansi-torture.js"]
+cwd = "."
+cleanup = []
+description = "Hostile escape sequences — every line states its expected visible text"
+
+[[tools]]
 name = "progress-spinner"
 command = "bun"
 args = ["test-scripts/progress-spinner.js"]
