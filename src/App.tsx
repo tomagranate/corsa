@@ -975,6 +975,7 @@ export function App({
 			showTabNumbers={showTabNumbers}
 			navigationKey={navigationKey}
 			homeEnabled={effectiveHomeEnabled}
+			healthStates={healthStates}
 		/>
 	);
 
