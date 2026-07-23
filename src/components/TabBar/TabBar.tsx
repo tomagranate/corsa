@@ -1,8 +1,10 @@
 import { TextAttributes } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
-import { StatusIcons } from "../../constants";
+import { STATUS_ICON_WIDTH, StatusIcons } from "../../constants";
+import type { HealthStateMap } from "../../lib/health";
 import type { Theme } from "../../lib/theme";
 import type { ToolState } from "../../types";
+import { Spinner } from "../Spinner";
 import {
 	calculateMinOffsetForTab,
 	calculateTabExtraPadding,
@@ -29,6 +31,7 @@ interface TabBarProps {
 	showTabNumbers?: boolean; // Show 1-9 shortcuts on first 9 tabs
 	navigationKey?: number; // Increment this when keyboard/shortcut navigation happens to trigger auto-scroll
 	homeEnabled?: boolean; // Whether home tab is shown as first tab
+	healthStates?: HealthStateMap; // Health check states, used to show a starting animation
 }
 
 export function TabBar({
@@ -41,6 +44,7 @@ export function TabBar({
 	showTabNumbers = false,
 	navigationKey = 0,
 	homeEnabled = false,
+	healthStates,
 }: TabBarProps) {
 	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 	const [scrollOffset, setScrollOffset] = useState(0); // First visible tab index
@@ -259,24 +263,36 @@ export function TabBar({
 		return vertical ? colors.surface1 : colors.surface0;
 	};
 
+	// A tool is "starting" once its process is running but its health check
+	// hasn't reported healthy yet - mirrors the dashboard's HealthStatusIndicator.
+	const isToolStarting = (tool: ToolState) => {
+		if (tool.status === "waiting" || tool.status === "stopped") {
+			return false;
+		}
+		return healthStates?.get(tool.config.name)?.status === "starting";
+	};
+
 	const getStatusIcon = (status: ToolState["status"]) => {
 		switch (status) {
 			case "running":
-				return `${StatusIcons.RUNNING} `;
+				return StatusIcons.RUNNING;
 			case "shuttingDown":
-				return `${StatusIcons.WARNING} `;
+				return StatusIcons.WARNING;
 			case "error":
-				return `${StatusIcons.ERROR} `;
+				return StatusIcons.ERROR;
 			case "waiting":
-				return `${StatusIcons.WAITING} `;
+				return StatusIcons.WAITING;
 			default:
-				return `${StatusIcons.STOPPED} `;
+				return StatusIcons.STOPPED;
 		}
 	};
 
 	const getTabTextColor = (tool: ToolState, index: number) => {
 		if (index === activeIndex) {
 			return colors.accentForeground;
+		}
+		if (isToolStarting(tool)) {
+			return colors.warning;
 		}
 		switch (tool.status) {
 			case "error":
@@ -290,6 +306,25 @@ export function TabBar({
 			default:
 				return colors.text;
 		}
+	};
+
+	// Renders the leading status glyph, swapping in the animated spinner
+	// (same as the dashboard's health indicator) while a tool is starting.
+	// Reserves a fixed-width column (icon + trailing space) so the gap to the
+	// name survives text wrapping in the fixed-width vertical sidebar - a
+	// leading space char living inside the (wrappable) name text can get
+	// trimmed when the name lands right at the wrap boundary.
+	const renderTabIcon = (tool: ToolState, tabIndex: number) => {
+		const color = getTabTextColor(tool, tabIndex);
+		return (
+			<box width={STATUS_ICON_WIDTH}>
+				{isToolStarting(tool) ? (
+					<Spinner color={color} interval={80} />
+				) : (
+					<text fg={color}>{getStatusIcon(tool.status)}</text>
+				)}
+			</box>
+		);
 	};
 
 	if (vertical) {
@@ -337,6 +372,8 @@ export function TabBar({
 					return (
 						<box
 							key={tool.config.name}
+							flexDirection="row"
+							alignItems="center"
 							paddingLeft={2}
 							paddingRight={2}
 							paddingTop={0}
@@ -348,11 +385,11 @@ export function TabBar({
 								onMouseLeave: () => setHoveredIndex(null),
 							} as Record<string, unknown>)}
 						>
+							{renderTabIcon(tool, tabIndex)}
 							<text
 								attributes={tabIndex === activeIndex ? TextAttributes.BOLD : 0}
 								fg={getTabTextColor(tool, tabIndex)}
 							>
-								{getStatusIcon(tool.status)}
 								{showTabNumbers && index < 9 ? `${index + 1}:` : ""}
 								{tool.config.name}
 							</text>
@@ -453,6 +490,8 @@ export function TabBar({
 				return (
 					<box
 						key={`${tool.config.name}-${index}`}
+						flexDirection="row"
+						alignItems="center"
 						paddingLeft={2 + extraLeft}
 						paddingRight={2 + extraRight}
 						paddingTop={0}
@@ -467,11 +506,11 @@ export function TabBar({
 							onMouseLeave: () => setHoveredIndex(null),
 						} as Record<string, unknown>)}
 					>
+						{renderTabIcon(tool, tabIndex)}
 						<text
 							attributes={tabIndex === activeIndex ? TextAttributes.BOLD : 0}
 							fg={getTabTextColor(tool, tabIndex)}
 						>
-							{getStatusIcon(tool.status)}
 							{showTabNumbers && index < 9 ? `${index + 1}:` : ""}
 							{truncateName(tool.config.name)}
 						</text>
