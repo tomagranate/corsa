@@ -797,9 +797,17 @@ export async function runUpdateInTui(): Promise<UpdateResult> {
 export async function runUpdate(): Promise<void> {
 	const method = detectInstallMethod();
 	const projectRoot = process.env.CORSA_PROJECT_ROOT;
+	const binaryPath =
+		resolveCompiledBinaryPath() ||
+		(process.argv[0] && !argv0IsJsRuntime(process.argv[0])
+			? process.argv[0]
+			: null);
 
 	printHeader();
 	printInfo("Install method", method);
+	if (binaryPath) {
+		printInfo("Binary", binaryPath);
+	}
 
 	// Commands for updates
 	const updateCommands: Record<AutoUpdateMethod, string[]> = {
