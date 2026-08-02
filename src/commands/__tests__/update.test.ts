@@ -14,6 +14,7 @@ import {
 	detectInstallMethodFromPath,
 	type InstallMethod,
 	parseSha256Checksum,
+	resolveCompiledBinaryPath,
 	verifyFileSha256,
 } from "../update";
 
@@ -24,8 +25,28 @@ import {
  *
  * Before the Cellar/realpath argv scan, detectInstallMethod() returned "development" for any
  * bun/node argv[0], so `corsa update` showed "Running from source".
+ *
+ * A second class of bug: Homebrew formula that installs a Bun --compile binary. There argv[0]
+ * is still "bun" and argv has only virtual /$bunfs/ paths, but process.execPath is the real
+ * Cellar binary. Without the execPath scan, update also reported "development".
  */
 const brewSymlinkTest = process.platform === "win32" ? test.skip : test;
+
+function withExecPath(path: string, fn: () => void): void {
+	const original = process.execPath;
+	Object.defineProperty(process, "execPath", {
+		value: path,
+		configurable: true,
+	});
+	try {
+		fn();
+	} finally {
+		Object.defineProperty(process, "execPath", {
+			value: original,
+			configurable: true,
+		});
+	}
+}
 
 describe("detectInstallMethodFromPath", () => {
 	// Test with checkBrew: false to avoid actual brew checks during tests
@@ -347,6 +368,7 @@ describe("detectInstallMethod", () => {
 			delete process.env.CORSA_INSTALL_METHOD;
 			delete process.env.HOMEBREW_PREFIX;
 			const saved = [...process.argv];
+			// execPath stays as the real bun binary → still development
 			process.argv = ["/opt/homebrew/bin/bun", "/Users/dev/corsa/src/cli.ts"];
 			try {
 				expect(detectInstallMethod()).toBe("development");
@@ -354,6 +376,90 @@ describe("detectInstallMethod", () => {
 				process.argv.length = 0;
 				process.argv.push(...saved);
 			}
+		});
+
+		test("detects development when HOMEBREW_PREFIX is set but running via bun on source", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			process.env.HOMEBREW_PREFIX = "/opt/homebrew";
+			const saved = [...process.argv];
+			process.argv = [
+				"/opt/homebrew/bin/bun",
+				"/Users/dev/corsa/src/index.tsx",
+			];
+			try {
+				// Must not treat brew shellenv + bun dev as a brew install
+				expect(detectInstallMethod()).toBe("development");
+			} finally {
+				process.argv.length = 0;
+				process.argv.push(...saved);
+			}
+		});
+	});
+
+	describe("Bun-compiled binary (argv[0] is bun, execPath is real binary)", () => {
+		test("detects brew when execPath is under Cellar/corsa", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			delete process.env.HOMEBREW_PREFIX;
+			const saved = [...process.argv];
+			// Real Bun --compile layout (matches probe on brew formula installs)
+			process.argv = ["bun", "/$bunfs/root/corsa", "update"];
+			withExecPath("/opt/homebrew/Cellar/corsa/1.2.6/bin/corsa", () => {
+				try {
+					expect(detectInstallMethod()).toBe("brew");
+				} finally {
+					process.argv.length = 0;
+					process.argv.push(...saved);
+				}
+			});
+		});
+
+		test("detects brew for Intel Homebrew Cellar execPath", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			delete process.env.HOMEBREW_PREFIX;
+			const saved = [...process.argv];
+			process.argv = ["bun", "/$bunfs/root/corsa"];
+			withExecPath("/usr/local/Cellar/corsa/1.2.7/bin/corsa", () => {
+				try {
+					expect(detectInstallMethod()).toBe("brew");
+				} finally {
+					process.argv.length = 0;
+					process.argv.push(...saved);
+				}
+			});
+		});
+
+		test("detects direct when execPath is a standalone binary install", () => {
+			delete process.env.CORSA_INSTALL_METHOD;
+			delete process.env.HOMEBREW_PREFIX;
+			const saved = [...process.argv];
+			const home = process.env.HOME || "/Users/dev";
+			const localBin = join(home, ".local", "bin", "corsa");
+			process.argv = ["bun", "/$bunfs/root/corsa"];
+			withExecPath(localBin, () => {
+				try {
+					// checkBrew may promote to brew if formula is installed; accept either
+					// when brew is present, but path without Cellar/homebrew should not be development
+					const method = detectInstallMethod();
+					expect(method).not.toBe("development");
+					expect(["direct", "brew"]).toContain(method);
+				} finally {
+					process.argv.length = 0;
+					process.argv.push(...saved);
+				}
+			});
+		});
+
+		test("resolveCompiledBinaryPath returns null when execPath is the bun runtime", () => {
+			withExecPath("/opt/homebrew/bin/bun", () => {
+				expect(resolveCompiledBinaryPath()).toBeNull();
+			});
+		});
+
+		test("resolveCompiledBinaryPath returns execPath for compiled binaries", () => {
+			const path = "/opt/homebrew/Cellar/corsa/1.2.6/bin/corsa";
+			withExecPath(path, () => {
+				expect(resolveCompiledBinaryPath()).toBe(path);
+			});
 		});
 	});
 });

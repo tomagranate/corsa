@@ -196,18 +196,36 @@ function isHomebrewCorsaInvokedViaRuntime(): boolean {
 }
 
 /**
+ * Path of the running corsa binary when available.
+ *
+ * Bun --compile sets process.argv[0] to "bun" and import.meta paths to virtual
+ * /$bunfs/ entries, but process.execPath is the real filesystem path of the
+ * compiled executable (including through Homebrew Cellar symlinks).
+ *
+ * When running via `bun`/`node` on source, execPath is the runtime binary
+ * itself and this returns null.
+ */
+export function resolveCompiledBinaryPath(): string | null {
+	const execPath = process.execPath ?? "";
+	if (!execPath || argv0IsJsRuntime(execPath)) {
+		return null;
+	}
+	return execPath;
+}
+
+/**
  * Detect how corsa was installed.
  *
  * Detection strategy:
  * 1. Check CORSA_INSTALL_METHOD env var (set by wrapper script for npm/pnpm/bun/yarn)
- * 2. If argv[0] is bun/node/deno: Homebrew may still be launching corsa — check argv for Cellar/corsa paths
- * 3. Same argv[0] case: otherwise treat as development (git clone / bun dev)
- * 4. Check HOMEBREW_PREFIX for compiled or other brew-linked installs
+ * 2. If argv[0] is bun/node/deno:
+ *    a. Homebrew may launch runtime + script under Cellar — check argv for Cellar/corsa
+ *    b. Bun-compiled binary: argv[0] is still "bun", but execPath is the real binary —
+ *       detect from that path (brew Cellar, ~/.local/bin, etc.)
+ *    c. Otherwise treat as development (git clone / bun dev)
+ * 3. If argv[0] is a real path, detect from that path
+ * 4. Check HOMEBREW_PREFIX as a last brew signal
  * 5. Fall back to "direct" (standalone binary install)
- *
- * Note: Bun-compiled binaries cannot determine their own filesystem path
- * (process.argv[0] returns "bun" and all import.meta paths return virtual /$bunfs/ paths).
- * The wrapper script detects the install method from its own path and passes it via env var.
  */
 export function detectInstallMethod(): InstallMethod {
 	// Check if wrapper script passed the install method
@@ -233,17 +251,32 @@ export function detectInstallMethod(): InstallMethod {
 		}
 	}
 
-	// Running via bun/node/deno: either development (repo) or Homebrew (formula execs runtime + script).
-	const argv0 = process.argv[0];
+	// Running via bun/node/deno: development, Homebrew script formula, or compiled binary.
+	const argv0 = process.argv[0] ?? "";
 	if (argv0 && argv0IsJsRuntime(argv0)) {
+		// Formula that execs: bun /opt/homebrew/Cellar/corsa/.../cli.js
 		if (isHomebrewCorsaInvokedViaRuntime()) {
 			return "brew";
 		}
+
+		// Bun --compile: argv[0] is "bun", execPath is the real binary on disk.
+		const compiledPath = resolveCompiledBinaryPath();
+		if (compiledPath) {
+			return detectInstallMethodFromPath(compiledPath);
+		}
+
 		return "development";
 	}
 
-	// Check for Homebrew install via environment variable
-	// When running directly (no wrapper), this indicates brew install
+	// OS/runtime reports a real argv[0] path (non-compiled or non-Bun).
+	if (argv0) {
+		const fromArgv0 = detectInstallMethodFromPath(argv0);
+		if (fromArgv0 !== "unknown") {
+			return fromArgv0;
+		}
+	}
+
+	// Weak signal: shell has Homebrew env (e.g. brew shellenv) but no path evidence.
 	if (process.env.HOMEBREW_PREFIX) {
 		return "brew";
 	}
@@ -516,8 +549,12 @@ async function selfUpdate(): Promise<void> {
 	console.log("Extracting...");
 	const newBinaryPath = await extractTarGz(archivePath, tempDir);
 
-	// Get the current binary path (argv[0] in compiled Bun binaries)
-	const currentBinaryPath = process.argv[0];
+	// Bun --compile reports argv[0] as "bun"; use execPath for the real binary.
+	const currentBinaryPath =
+		resolveCompiledBinaryPath() ||
+		(process.argv[0] && !argv0IsJsRuntime(process.argv[0])
+			? process.argv[0]
+			: null);
 	if (!currentBinaryPath) {
 		throw new Error("Could not determine current binary path");
 	}
