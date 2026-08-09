@@ -298,4 +298,3 @@ jobs:
               "homepage": "https://github.com/tomagranate/corsa",
               "license": "MIT"
             }
-        continue-on-error: true
